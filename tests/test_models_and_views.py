@@ -246,3 +246,40 @@ def test_filter_options_include_all_boss_platforms():
                      if item["field"] == "platforms")
     assert set(platforms["options"]) == {"tianyancha", "tianyan_ai", "zhihu",
                                          "weibo", "tieba"}
+
+
+# ---------------------------------------------------------------- 技能分类
+@pytest.mark.parametrize("name,expected", [
+    ("Python", "tech"),
+    ("MySQL", "tech"),
+    ("数据分析/挖掘经验", "tech"),      # 复合标签按"任一段命中"算
+    ("AI Agent 智能体", "tech"),
+    ("C/C++", "tech"),
+    ("R", "tech"),                     # 单字母靠精确匹配，不能被子串规则误伤
+    ("Go", "tech"),
+    ("双休", "tag"),
+    ("五险一金", "tag"),
+    ("办公室坐班", "tag"),
+    ("肢体残疾", "tag"),
+    ("抖音", "tag"),
+    ("产品运营", "tag"),
+    ("计算机相关专业", "tag"),
+])
+def test_classify_skill(name, expected):
+    from boss_crawler.app.views import classify_skill
+
+    assert classify_skill(name) == expected
+
+
+def test_classify_skill_ignores_single_letter_false_positive():
+    """'r' 不能因为子串命中就把任意含 r 的中文标签判成技术栈。"""
+    from boss_crawler.app.views import classify_skill
+
+    assert classify_skill("餐饮经验") == "tag"
+    assert classify_skill("办公室坐班") == "tag"
+
+
+def test_classify_skill_empty():
+    from boss_crawler.app.views import classify_skill
+
+    assert classify_skill("") == "tag"
