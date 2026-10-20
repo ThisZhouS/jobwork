@@ -83,6 +83,7 @@ __all__ = [
     "rows_to_findings",
     "run_agents",
     "sentiment_summary",
+    "settings",
     "tool_catalog",
     "tool_names",
 ]

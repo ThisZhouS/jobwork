@@ -1,0 +1,4 @@
+{
+  "_说明": "agent 配置。enabled=false 会在流水线里跳过该 agent；model 按能力覆盖模型规格（见 config/models.json）。",
+  "agents": {}
+}

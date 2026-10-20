@@ -168,10 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_db_args(app_cmd)
     app_cmd.add_argument("action",
                          choices=["status", "init", "login", "run", "data", "resume",
-                                  "filters", "cloud", "company", "job", "series", "models"],
+                                  "filters", "cloud", "company", "job", "series", "models",
+                                  "agents", "agent-set", "agent-reset"],
                          help="status=自检 init=建表 login=弹窗登录 run=跑流水线 "
                               "data=列表 filters=筛选项 cloud=技能词云 company=公司详情 "
-                              "job=岗位详情 series=维度折线 models=模型规格")
+                              "job=岗位详情 series=维度折线 models=模型规格 "
+                              "agents=agent 配置 agent-set=改配置 agent-reset=恢复默认")
     app_cmd.add_argument("--platforms", default=None,
                          help="逗号分隔的平台开关，如 tianyancha,zhihu,weibo,tieba（默认全开）")
     app_cmd.add_argument("--source", default="boss", help="招聘数据源（默认 boss）")
@@ -192,6 +194,14 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--company-key", default=None, help="company/series 动作：公司主键")
     app_cmd.add_argument("--field", default=None, help="series 动作：要画折线的字段（默认 total）")
     app_cmd.add_argument("--no-model", action="store_true", help="关停所有模型调用")
+    # agent 配置
+    app_cmd.add_argument("--name", default=None, help="agent-set/reset 动作：agent 名")
+    app_cmd.add_argument("--enable", action="store_true", help="agent-set：启用")
+    app_cmd.add_argument("--disable", action="store_true", help="agent-set：停用")
+    app_cmd.add_argument("--model", default=None,
+                         help="agent-set：按能力指定模型，如 chat=chat.doubao（可多次用逗号分隔）")
+    app_cmd.add_argument("--option", default=None,
+                         help="agent-set：透传选项，如 key=value（逗号分隔）")
     app_cmd.add_argument("--resume", default=None, help="简历 JSON 文件路径")
     app_cmd.add_argument("--state", default=".state/login", help="登录态目录")
     app_cmd.add_argument("--timeout", type=float, default=300.0, help="登录等待秒数")

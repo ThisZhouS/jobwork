@@ -18,7 +18,7 @@ BOSS直聘 岗位采集 → JD 结构化 → PostgreSQL（元数据与向量同�
 │   ├── industry_codes.py    行业码表（由站点探测生成）
 │   ├── embedding.py         向量化客户端（Ark doubao-embedding-vision）
 │   └── export.py            Excel/CSV 导出
-├── tests/                   单元测试（363 条，与包结构对应）
+├── tests/                   单元测试（408 条，与包结构对应）
 ├── scripts/                 一次性脚本，不属于生产路径
 │   ├── research/            早期接口探测与反爬调研留档
 │   └── anti_detect_check.py 反检测自检
@@ -56,6 +56,7 @@ engine → （无内部依赖，只认 Request/Response/Item 三个契约）
 | 文档 | 说明 |
 |---|---|
 | [desktop-design.md](desktop-design.md) | 桌面端页面框架、路由、IPC 与数据契约（只定结构不定视觉） |
+| [desktop-redesign.md](desktop-redesign.md) | 桌面端重设计：概念图 → 拆解 → 实现，含令牌表与逐图拆解 |
 | [app-pipeline.md](app-pipeline.md) | `boss_crawler/app/`：采集→背调→打分→适配度→简历的编排、库表、前端 CLI 契约 |
 | [agent-layer.md](agent-layer.md) | `boss_crawler/agents/`：工具层、ToolBox 反爬、ToolAgent、评分框架 |
 | [cli.md](cli.md) | `boss_crawler/cli/` |

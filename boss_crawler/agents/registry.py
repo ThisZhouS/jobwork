@@ -116,9 +116,15 @@ class Pipeline:
         current = request
         results: list[AgentResult] = []
         for step in self.steps:
+            # 配置里停用的步骤直接跳过；有模型/选项覆盖时用派生上下文
+            from . import settings as agent_settings
+
+            if not agent_settings.is_enabled(step):
+                continue
             agent = get(step)()
+            step_context = agent_settings.scope_context(ctx, step)
             step_request = _derive(current, base=request, options=(options_by_step or {}).get(step))
-            result = await agent.execute(step_request, ctx)
+            result = await agent.execute(step_request, step_context)
             results.append(result)
 
             # 把本次产出回灌，供后续步骤使用

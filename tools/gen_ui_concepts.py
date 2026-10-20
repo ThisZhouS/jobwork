@@ -140,9 +140,8 @@ CONCEPTS = [
 ]
 
 
-def _read_key(cli_key: str | None) -> str:
-    if cli_key:
-        return cli_key.strip()
+def _read_key() -> str:
+    """只从环境变量或 .state 读，不接受命令行参数——命令行会进 shell 历史和进程列表。"""
     for env in ("ARK_IMAGE_KEY", "ARK_API_KEY"):
         value = os.environ.get(env, "").strip()
         if value:
@@ -153,7 +152,7 @@ def _read_key(cli_key: str | None) -> str:
             text = path.read_text(encoding="utf-8").strip()
             if text:
                 return text
-    raise SystemExit("缺少密钥：设置 ARK_IMAGE_KEY，或写入 .state/ark_image_key.txt")
+    raise SystemExit("缺少密钥：设置环境变量 ARK_IMAGE_KEY，或写入 .state/ark_image_key.txt")
 
 
 def _fetch(prompt: str, size: str, key: str) -> bytes:
@@ -191,12 +190,11 @@ def _shrink(blob: bytes, max_width: int = 1600) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--key", default=None)
     parser.add_argument("--only", default=None, help="只生成某张（如 01）")
     parser.add_argument("--no-shrink", action="store_true")
     args = parser.parse_args()
 
-    key = _read_key(args.key)
+    key = _read_key()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     manifest: list[dict] = []
 
