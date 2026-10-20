@@ -258,13 +258,29 @@ class Pipeline:
         )
 
     async def _run_agent(self, name: str, request: AgentRequest):
+        # 配置里被停用的 agent 直接跳过（config/agents.json）
+        try:
+            from ..agents import settings as agent_settings
+
+            if not agent_settings.is_enabled(name):
+                self._warn(name, f"agent {name} 已在配置中停用，跳过")
+                return None
+        except Exception:  # noqa: BLE001 - 配置层出问题不该阻断流水线
+            pass
         try:
             agent = get(name)()
         except KeyError:
             self._warn(name, f"agent {name} 不存在，已跳过")
             return None
         try:
-            return await agent.execute(request, self.ctx)
+            ctx = self.ctx
+            try:
+                from ..agents import settings as agent_settings
+
+                ctx = agent_settings.scope_context(self.ctx, name)
+            except Exception:  # noqa: BLE001
+                ctx = self.ctx
+            return await agent.execute(request, ctx)
         except Exception as exc:  # noqa: BLE001 - 单个 agent 崩了不该中断整条流水线
             self.emit({"type": "error", "agent": name,
                        "message": f"{type(exc).__name__}: {exc}"})

@@ -2,6 +2,20 @@
 .state/
 # 凭据：天眼查 token、Ark key、数据库密码（模板见 .env.example）
 .env
+.env.*
+!.env.example
+# 任何位置的密钥/证书文件
+*.pem
+*.key
+*.pfx
+ark_key.txt
+ark_image_key.txt
+tyc_token.txt
+pg_password.txt
+storage_state.json
+# 本地覆盖配置（可能被填进真实 token）
+config/*.local.json
+config/*.secret.json
 # 抓取结果
 output/
 # 日志与临时文件

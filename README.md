@@ -655,6 +655,59 @@ python -m boss_crawler app models --json        # 模型规格与可用性
 
 ---
 
+## 5.9 agent 配置（`config/agents.json`）：关掉、换模型、传选项
+
+agent 注册在代码里，但**可调项放在配置里**，改完立即生效，不用重启也不用改代码。
+
+```powershell
+python -m boss_crawler app agents                        # 看当前状态
+python -m boss_crawler app agent-set --name zhihu --disable
+python -m boss_crawler app agent-set --name resume_tailor --model chat=chat.doubao
+python -m boss_crawler app agent-set --name job_fit --option max_items=30
+python -m boss_crawler app agent-reset --name zhihu      # 恢复默认
+```
+
+配置文件长这样（`config/agents.json`）：
+
+```json
+{
+  "agents": {
+    "zhihu":         { "enabled": false },
+    "resume_tailor": { "model": { "chat": "chat.doubao" } },
+    "job_fit":       { "options": { "max_items": 30 } }
+  }
+}
+```
+
+几个约定：
+
+- `enabled=false` 的 agent 在流水线里**直接跳过**，并写一条 `skipped` 事件，不是静默消失；
+- `model` 按**能力**覆盖（`chat`/`embedding`），只影响这一个 agent，不污染其他；
+- 写错会**报错而不是忽略**——未注册的 agent、不存在的模型规格一律拒绝。
+  这道校验是有意为之：配置写错的代价是"以为生效了其实没有"，比报错更难查。
+
+桌面端「设置 → agent 配置」里的勾选框直接写这个文件。
+
+## 5.10 密钥与安全检查
+
+**仓库里不放任何密钥**，这条由工具守住：
+
+```powershell
+python tools/check_secrets.py            # 扫 git 跟踪的文件
+python tools/check_secrets.py --all      # 扫工作区（含未跟踪）
+```
+
+扫描的形状包括 Ark key、AWS AK、GitHub token、`sk-`、明文 Bearer、
+带密码的连接串、以及 `PGPASSWORD=` / `ARK_API_KEY=` / `TIANYANCHA_TOKEN=` 的**字面量赋值**
+（`os.environ[...]` 这类表达式不算）。命中只打印头尾，不会把密钥本身写进日志。
+
+`tests/test_secrets.py` 会同时跑「跟踪文件」和「工作区」两遍，所以误提交会被 pytest 拦住。
+另外 `.gitignore` 兜住了 `.state/`、`.env*`、`*.pem`、`*.key`、`storage_state.json`、
+`config/*.local.json` 等。
+
+**密钥只从两处读**：环境变量，或 `.state/` 下的文件（该目录已被忽略）。
+命令行不接受 `--key` 参数——命令行会进 shell 历史，也会出现在进程列表里。
+
 ## 6. BOSS直聘 反爬机制实测
 
 以下结论来自 `scripts/research/` 里的探测脚本与站点 JS，时间 2026-10。
@@ -729,7 +782,7 @@ BOSS直聘 的登录票据主要在 httpOnly Cookie 里，`document.cookie` 读�
 
 ```powershell
 python -m boss_crawler doctor
-python -m pytest -q                        # 363 条
+python -m pytest -q                        # 408 条
 python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销毁
 ```
 
@@ -738,7 +791,9 @@ python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销
   「code 7 → 抛登录异常」「重试次数有上限」，不触网；
 * `test_agents_core.py`（41 条）：契约、注册表、Pipeline、状态判定、抓取工具；
 * `test_agents_backduty.py`（56 条）：工具注册表与契约、各站点解析、被挡/壳页识别、agent 汇总；
-* `test_models_and_views.py`（27 条）：模型规格/开关/覆盖/降级、劳务派遣三态、前端视图契约；
+* `test_agent_settings.py`（16 条）：agent 配置读写、校验、作用域覆盖、流水线跳过；
+* `test_secrets.py`（13 条）：密钥扫描器自身 + 仓库无密钥断言；
+* `test_models_and_views.py`（43 条）：模型规格/开关/覆盖/降级、劳务派遣三态、前端视图契约；
 * `test_app_pipeline.py`（26 条）：数据源注册、登录配置、编排三段与失败兜底；
 * `test_agents_scoring.py`（26 条）：评分框架（Rule/Rubric/ScoreContext）、空骨架行为、规则工具函数；
 

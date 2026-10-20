@@ -57,11 +57,34 @@ def _platform_list(args) -> list[str]:
     return [item.strip() for item in str(raw).split(",") if item.strip()]
 
 
+def _parse_pairs(raw: str | None, *, sep: str = "=") -> dict | None:
+    """把 ``a=1,b=2`` 解析成字典；没给就返回 None（表示"不改这一项"）。"""
+    if not raw:
+        return None
+    out: dict[str, str] = {}
+    for chunk in str(raw).split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if sep not in chunk:
+            raise SystemExit(f"格式不对：{chunk}（应为 key{sep}value）")
+        key, value = chunk.split(sep, 1)
+        out[key.strip()] = value.strip()
+    return out or None
+
+
 def _agent_rows() -> list[dict]:
-    from ..agents.registry import catalog
+    """agent 列表：注册表声明 + 配置文件的启用状态。"""
+    from ..agents.settings import effective
 
     try:
-        return [{"name": row["name"], "kind": row["kind"]} for row in catalog()]
+        return [
+            {"name": row["name"], "kind": row["kind"],
+             "enabled": row.get("enabled", True),
+             "model": row.get("model") or {},
+             "requires_models": row.get("requires_models") or []}
+            for row in effective()
+        ]
     except Exception:  # noqa: BLE001
         return []
 
@@ -182,6 +205,61 @@ def cmd_app(args) -> int:
                     dim_text = " ".join(f"{k}{v:.0f}" for k, v in dims.items())
                     print(f"  {str(row['name'])[:22]:<24} "
                           f"{score.get('total') or 0:5.1f} {score.get('grade') or '-':<2} {dim_text}")
+            return 0
+
+        if args.action == "agents":
+            from ..agents.settings import describe
+
+            payload = describe()
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                print(f"配置文件：{payload['file']}"
+                      f"{'' if payload['exists'] else '（尚未创建）'}")
+                print(f"共 {payload['total']} 个 agent"
+                      f"{'，停用 ' + '、'.join(payload['disabled']) if payload['disabled'] else '，全部启用'}")
+                for row in payload["agents"]:
+                    model = "、".join(f"{k}={v}" for k, v in (row["model"] or {}).items())
+                    flags = []
+                    if not row["enabled"]:
+                        flags.append("已停用")
+                    if model:
+                        flags.append(model)
+                    if row.get("configured"):
+                        flags.append("有自定义配置")
+                    print(f"  {row['name']:<18} {row['kind']:<9} "
+                          f"{'，'.join(flags) if flags else '默认'}")
+            return 0
+
+        if args.action == "agent-set":
+            from ..agents.settings import set_config
+
+            if not args.name:
+                print("需要 --name")
+                return 2
+            if args.enable and args.disable:
+                print("--enable 与 --disable 不能同时给")
+                return 2
+            enabled = True if args.enable else (False if args.disable else None)
+            model = _parse_pairs(args.model, sep="=")
+            options = _parse_pairs(args.option, sep="=")
+            try:
+                conf = set_config(args.name, enabled=enabled, model=model, options=options)
+            except (ValueError, KeyError) as exc:
+                print(f"配置失败：{exc}")
+                return 2
+            print(f"{conf.name} 已更新：enabled={conf.enabled} "
+                  f"model={conf.model or '{}'} options={conf.options or '{}'}")
+            return 0
+
+        if args.action == "agent-reset":
+            from ..agents.settings import reset_config
+
+            if not args.name:
+                print("需要 --name")
+                return 2
+            reset_config(args.name)
+            print(f"{args.name} 已恢复默认")
             return 0
 
         if args.action == "filters":

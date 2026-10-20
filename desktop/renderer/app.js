@@ -1106,12 +1106,20 @@ async function pageSettings() {
       </div>
 
       <div class="card">
-        <div class="card-head">${cardTitle("背调 agent", "layers", true)}</div>
+        <div class="card-head">${cardTitle("agent 配置", "layers", true)}
+          <div class="card-sub">取消勾选即停用，立即生效</div></div>
         ${(status.agents || []).map((a) => `
           <div class="rank-row">
-            <span class="rank-label" style="width:auto;flex:1">${esc(a.name)}</span>
+            <label style="flex:1;display:flex;align-items:center;gap:9px;cursor:pointer;min-width:0">
+              <input type="checkbox" data-agent-enabled="${esc(a.name)}" ${a.enabled === false ? "" : "checked"}>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
+            </label>
+            ${(a.model && Object.keys(a.model).length)
+              ? `<span class="pill pill-cyan" title="按能力覆盖模型">${esc(Object.values(a.model).join(","))}</span>`
+              : ""}
             <span class="pill pill-dim">${esc(a.kind)}</span>
-          </div>`).join("")}
+          </div>`).join("") || `<div class="empty">无 agent</div>`}
+        <div class="chart-note left">配置文件：config/agents.json · 命令行 app agent-set --name X --disable</div>
       </div>
     </div>
 
@@ -1144,6 +1152,24 @@ async function pageSettings() {
     router();
   });
   $("#btn-refresh").addEventListener("click", router);
+
+  // agent 开关：勾选状态直接写回 config/agents.json
+  $$("[data-agent-enabled]").forEach((box) => box.addEventListener("change", async () => {
+    const name = box.dataset.agentEnabled;
+    const enable = box.checked;
+    const res = await window.api.call("agent-set", enable
+      ? { name, enable: true }
+      : { name, disable: true });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      box.checked = !enable;   // 回滚界面状态
+      return;
+    }
+    chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
+    const fresh = await call("status");
+    if (fresh) state.status = fresh;
+  }));
   $("#btn-login").addEventListener("click", async () => {
     const platforms = $$("input[data-login]:checked").map((n) => n.dataset.login);
     if (!platforms.length) { chatLog("err", "校验", "请选择平台"); openDrawer(); return; }
