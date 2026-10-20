@@ -45,6 +45,53 @@ def filter_options() -> dict[str, Any]:
     return out
 
 
+#: 判断一个标签算不算"技术栈"。BOSS 的 skills 字段里混了福利和公司名
+#: （"双休""五险一金""办公室坐班""抖音"），直接用会让词云失真。
+TECH_HINTS = {
+    "python", "java", "golang", "go", "rust", "c++", "c/c++", "c#", "php", "ruby",
+    "javascript", "typescript", "node", "vue", "react", "angular", "html", "css",
+    "sql", "mysql", "postgresql", "oracle", "redis", "mongodb", "elasticsearch",
+    "hive", "hadoop", "spark", "flink", "kafka", "airflow", "clickhouse", "hbase",
+    "docker", "kubernetes", "k8s", "linux", "git", "jenkins", "grafana", "nginx",
+    "django", "flask", "fastapi", "spring", "springcloud", "mybatis", "pytorch",
+    "tensorflow", "pandas", "numpy", "scikit", "matlab", "tableau", "powerbi",
+    "power bi", "sas", "spss", "scala", "shell", "bash", "pytest", "selenium",
+    "机器学习", "深度学习", "数据挖掘", "数据仓库", "数据分析", "数据开发",
+    "数据建模", "算法", "爬虫", "微服务", "分布式", "高并发", "云计算", "大数据",
+    "前端", "后端", "全栈", "测试", "运维", "可视化", "etl", "bi", "llm",
+    "大模型", "人工智能", "nlp", "cv", "推荐系统", "搜索", "量化", "统计",
+    "ai agent", "智能体", "langchain", "langgraph", "rag", "prompt", "agent",
+}
+
+#: 单字母/极短的技术栈只能按"整段精确匹配"，否则 'r' 会命中所有含 r 的文本
+TECH_EXACT = {"r", "c", "go", "js", "ts", "bi", "cv", "nlp", "rag", "etl", "ai"}
+
+#: 分隔符：把 "数据分析/挖掘经验" 拆成两段再判断
+_SPLIT = str.maketrans({"/": " ", "、": " ", "，": " ", ",": " ", "|": " ", "；": " "})
+
+
+def classify_skill(name: str) -> str:
+    """把一个标签分成 ``tech``（技术栈）或 ``tag``（福利/行业/其它）。
+
+    只要有任何一段命中技术词就算技术栈——"数据分析/挖掘经验"这种复合标签
+    本质上还是在说要一门技术。
+    """
+    text = str(name or "").strip()
+    if not text:
+        return "tag"
+    lowered = text.lower()
+    # 长词走子串（"Python"、"机器学习" 都能命中复合标签）
+    if any(len(hint) > 1 and hint in lowered for hint in TECH_HINTS):
+        return "tech"
+    # 短词走整段（避免 'r' 命中 'Redis' 之外的任意含 r 文本）
+    for piece in lowered.translate(_SPLIT).split():
+        if len(piece) <= 3 and piece in TECH_EXACT:
+            return "tech"
+        if piece in TECH_HINTS:
+            return "tech"
+    return "tag"
+
+
 # ---------------------------------------------------------------- 技能词云
 def skill_cloud(store: AppStore, *, limit: int = 200,
                 company_key: str | None = None, city: str | None = None) -> dict:
@@ -76,7 +123,11 @@ def skill_cloud(store: AppStore, *, limit: int = 200,
     for row in rows:
         # 前端可以直接拿 weight 决定字号，不必自己算比例
         row["weight"] = round(row["count"] / total, 4)
-    return {"skills": rows, "total": sum(row["count"] for row in rows)}
+        # tech / tag：让词云能分栏，"双休"不该混在技能里
+        row["kind"] = classify_skill(row["name"])
+    return {"skills": rows, "total": sum(row["count"] for row in rows),
+            "counts": {"tech": sum(1 for row in rows if row["kind"] == "tech"),
+                       "tag": sum(1 for row in rows if row["kind"] == "tag")}}
 
 
 # ---------------------------------------------------------------- 公司详情
