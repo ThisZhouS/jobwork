@@ -1,0 +1,16 @@
+# 采集：scrapling 的 StealthySession 基于 patchright，需要一并安装
+scrapling==0.4.8
+patchright>=1.64
+browserforge
+
+# 存储与向量化
+psycopg2-binary>=2.9
+requests>=2.31
+openpyxl>=3.1
+
+# 异步引擎的 HTTP 传输层（providers/ 走 engine/ 时使用）
+httpx>=0.27
+
+# 测试
+pytest>=7
+pytest-asyncio>=0.23

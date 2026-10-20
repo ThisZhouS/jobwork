@@ -1,0 +1,13 @@
+{
+  "name": "jobs-desktop",
+  "version": "0.1.0",
+  "description": "求职背调工作台（Electron 壳，调 boss_crawler app CLI）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
