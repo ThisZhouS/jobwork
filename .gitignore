@@ -1,0 +1,19 @@
+# 运行期状态：登录态 / Cookie 快照，含敏感信息
+.state/
+# 凭据：天眼查 token、Ark key、数据库密码（模板见 .env.example）
+.env
+# 抓取结果
+output/
+# 日志与临时文件
+*.log
+__pycache__/
+*.pyc
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
+
+# 桌面端依赖与构建产物
+desktop/node_modules/
+desktop/dist/
+desktop/out/

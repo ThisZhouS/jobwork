@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;">
+<title>求职背调工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- 左侧导航 -->
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">求职背调</div>
+    </div>
+    <nav id="nav">
+      <a href="#/" data-route="/"><i data-icon="overview"></i>概览</a>
+      <a href="#/jobs" data-route="/jobs"><i data-icon="jobs"></i>岗位</a>
+      <a href="#/companies" data-route="/companies"><i data-icon="companies"></i>公司</a>
+      <a href="#/skills" data-route="/skills"><i data-icon="cloud"></i>技能词云</a>
+      <a href="#/resume" data-route="/resume"><i data-icon="resume"></i>简历</a>
+      <a href="#/settings" data-route="/settings"><i data-icon="settings"></i>设置</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="db-status" class="pill pill-dim">连接中…</div>
+    </div>
+  </aside>
+
+  <!-- 右侧内容区 -->
+  <main id="main">
+    <div id="page"></div>
+  </main>
+
+  <!-- 底部对话口 -->
+  <div id="chat-toggle" title="对话口">
+    <span class="chat-dot" id="chat-badge" hidden></span>
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+  </div>
+  <div id="chat-drawer" hidden>
+    <div class="chat-head">
+      <span id="chat-title">运行与问答</span>
+      <button class="btn-ghost" id="chat-close">收起</button>
+    </div>
+    <div class="chat-body" id="chat-log"></div>
+    <div class="chat-input" id="chat-questions"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
