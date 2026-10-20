@@ -9,12 +9,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
-import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 RENDERER = ROOT / "desktop" / "renderer"
@@ -71,8 +71,10 @@ window.api = {
 
 
 def _run_cli(argv: list[str]) -> subprocess.Popen:
-    env = dict(**__import__("os").environ, PYTHONPATH=str(ROOT),
-               PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    # 注意：不能用 dict(**os.environ)，Windows 上存在 "ProgramFiles(x86)"、
+    # "=C:" 这类非法标识符名，** 展开会直接抛 TypeError。
+    env = dict(os.environ)
+    env.update({"PYTHONPATH": str(ROOT), "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
     return subprocess.Popen(
         [sys.executable, "-m", "boss_crawler", "app", *argv, "--json"],
         cwd=ROOT, env=env,
@@ -119,6 +121,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------- API
     def do_POST(self):
+        # 兜底：任何异常都返回 JSON，而不是把连接掐断（排查时看不到原因）
+        try:
+            self._handle_post()
+        except Exception as exc:  # noqa: BLE001
+            payload = {"code": -1, "data": None, "stdout": "",
+                       "stderr": f"{type(exc).__name__}: {exc}"}
+            try:
+                self._send(json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _handle_post(self):
         path = urlparse(self.path).path
         data = self._body()
         if path == "/api/call":

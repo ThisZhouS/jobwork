@@ -218,10 +218,16 @@ function companyRow(c) {
 // ---------------------------------------------------------------- 页面：概览
 async function pageOverview() {
   page().innerHTML = `<div class="loading">加载中…</div>`;
-  const [data, status] = await Promise.all([call("data"), call("status")]);
+  const data = state.data || await call("data");
   if (!data) { page().innerHTML = `<div class="empty">取数失败，看对话口</div>`; return; }
   state.data = data;
-  const scored = data.companies.filter((c) => c.score);
+  // 有打分的排前面，未打分的沉底（概览页一眼看到结论）
+  const sorted = [...data.companies].sort((a, b) => {
+    const sa = a.score && a.score.total != null ? a.score.total : -1;
+    const sb = b.score && b.score.total != null ? b.score.total : -1;
+    return sb - sa;
+  });
+  const scored = sorted.filter((c) => c.score && c.score.total != null);
   const fitted = data.jobs.filter((j) => j.fit);
   const negEvidence = data.companies.reduce((s, c) => s + ((c.evidence || {}).negative || 0), 0);
 
@@ -236,13 +242,13 @@ async function pageOverview() {
     </div>
     <div class="grid grid-21" style="margin-top:16px">
       <div class="card">
-        <div class="card-title">公司评分（点行看详情，点字段看趋势）</div>
+        <div class="card-title">公司评分（点行看详情，点维度看趋势）</div>
         <table><thead><tr>
           <th>公司</th><th class="num">总分</th><th>等级</th>
           <th class="num">风险</th><th class="num">待遇</th><th class="num">压力</th>
           <th class="num">环境</th><th class="num">福利</th><th>劳务派遣</th><th class="num">证据</th>
         </tr></thead><tbody>
-          ${data.companies.slice(0, 15).map(companyRow).join("") || `<tr><td colspan="10" class="empty">还没有数据，先去「岗位」跑一次流水线</td></tr>`}
+          ${sorted.slice(0, 15).map(companyRow).join("") || `<tr><td colspan="10" class="empty">还没有数据，先去「岗位」跑一次流水线</td></tr>`}
         </tbody></table>
       </div>
       <div class="card">
@@ -252,9 +258,9 @@ async function pageOverview() {
             <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.title)}</span>
             <span class="score">${fmt(j.fit.total)}</span>
             <span class="${gradeClass(j.fit.grade)}">${esc(j.fit.grade || "?")}</span>
-          </div>`).join("") : `<div class="empty">还没有适配度数据</div>`}
+          </div>`).join("") : `<div class="empty">还没有适配度数据<br><span style="font-size:12px">需要一份已确认的简历</span></div>`}
         <div style="margin-top:12px;color:var(--text-faint);font-size:12px">
-          数据库：${status && status.db ? `岗位 ${status.db.jobs} / 证据 ${status.db.backduty_evidence} / 打分 ${status.db.company_score}` : "未知"}
+          共 ${data.companies.length} 家公司，${scored.length} 家已打分
         </div>
       </div>
     </div>`;
@@ -698,28 +704,34 @@ async function pageSettings() {
   const [status, models] = await Promise.all([call("status"), call("models")]);
   if (!status) { page().innerHTML = `<div class="empty">自检失败，看对话口</div>`; return; }
 
-  const checks = status.checks || {};
+  const db = status.db || {};
+  const login = status.login || {};
   const checkPill = (ok) => ok
     ? `<span class="pill pill-ok">正常</span>` : `<span class="pill pill-bad">异常</span>`;
 
   page().innerHTML = `
     <div class="page-head"><div class="page-title">设置</div>
-      <div class="page-sub">初始化、平台登录、模型可用性</div></div>
+      <div class="page-sub">初始化、平台登录、数据源与模型可用性</div></div>
     <div class="grid grid-2">
       <div class="card">
-        <div class="card-title">环境与初始化</div>
-        <div class="dim-row"><span style="flex:1">数据库</span>${checkPill(checks.database)}</div>
-        <div class="dim-row"><span style="flex:1">表结构（${status.tables} 张）</span>${checkPill(checks.tables)}</div>
-        <div class="dim-row"><span style="flex:1">BOSS 接口</span>${checkPill(checks.boss_api)}</div>
-        <div class="dim-row"><span style="flex:1">天眼查 API key</span>${checkPill(checks.tianyancha_api_key)}</div>
+        <div class="card-title">数据库</div>
+        <div class="dim-row"><span style="flex:1">连接状态</span>${checkPill(db.ok)}</div>
+        <div class="dim-row"><span style="flex:1">岗位</span><span class="score">${db.jobs ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">公司</span><span class="score">${db.companies ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">公司打分记录</span><span class="score">${db.company_score ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">背调证据</span><span class="score">${db.backduty_evidence ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">天眼查原始数据</span><span class="score">${db.backduty_raw ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">岗位适配度</span><span class="score">${db.job_fit ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">简历版本</span><span class="score">${db.resume_version ?? "—"}</span></div>
+        <div class="dim-row"><span style="flex:1">报错日志</span><span class="score">${db.agent_error ?? "—"}</span></div>
         <div style="margin-top:14px;display:flex;gap:10px">
           <button class="btn btn-sm" id="btn-init">初始化 / 建表</button>
           <button class="btn btn-ghost btn-sm" id="btn-refresh">刷新自检</button>
+          <a class="btn btn-ghost btn-sm" href="#/companies">看公司</a>
         </div>
-        <div class="chart-note">库内：岗位 ${status.db?.jobs ?? "—"} / 公司 ${status.db?.companies ?? "—"} / 证据 ${status.db?.backduty_evidence ?? "—"}</div>
       </div>
       <div class="card">
-        <div class="card-title">模型（密钥不在这里显示）</div>
+        <div class="card-title">模型（密钥只显示有无，不显示值）</div>
         ${(models?.models || []).map((m) => `
           <div class="dim-row">
             <span style="flex:1">${esc(m.name)} <span style="color:var(--text-faint);font-size:12px">${esc(m.kind)}</span></span>
@@ -731,20 +743,40 @@ async function pageSettings() {
         `).join("") || `<div class="empty">无模型规格</div>`}
       </div>
     </div>
+    <div class="grid grid-2 section">
+      <div class="card">
+        <div class="card-title">数据源（岗位从哪来）</div>
+        ${(status.sources || []).map((s) => `
+          <div class="dim-row">
+            <span style="flex:1">${esc(s.label)} <span style="color:var(--text-faint);font-size:12px">${esc(s.name)}</span></span>
+            ${s.implemented ? `<span class="pill pill-ok">已接入</span>` : `<span class="pill pill-dim">预留</span>`}
+          </div>`).join("")}
+        <div class="chart-note" style="text-align:left">预留插槽：实现对应 build_steps 即可接入新平台</div>
+      </div>
+      <div class="card">
+        <div class="card-title">背调 agent</div>
+        ${(status.agents || []).map((a) => `
+          <div class="dim-row"><span style="flex:1">${esc(a.name)}</span>
+            <span class="pill pill-dim">${esc(a.kind)}</span></div>`).join("")}
+      </div>
+    </div>
     <div class="card section">
-      <div class="card-title">平台登录（点初始化后按需登录，会弹出浏览器窗口）</div>
+      <div class="card-title">平台登录（会弹出真实浏览器窗口，请在窗口里完成登录）</div>
       <div class="checkbox-row" id="login-platforms">
-        ${["tianyancha", "zhihu", "weibo", "tieba", "boss"].map((p) =>
-          `<label><input type="checkbox" data-login="${p}"> ${p}</label>`).join("")}
+        ${(status.platforms || []).map((p) =>
+          `<label title="${esc(p.note || "")}"><input type="checkbox" data-login="${esc(p.key)}"> ${esc(p.label)}</label>`).join("")}
       </div>
       <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
         <button class="btn btn-sm" id="btn-login">登录所选平台</button>
-        <span style="font-size:12px;color:var(--text-faint)">登录状态会存到 .state/login，背调时自动带上</span>
+        <span style="font-size:12px;color:var(--text-faint)">登录态存到 .state/login，背调时自动带上</span>
       </div>
       <div id="login-status" style="margin-top:12px">
-        ${(status.logins || []).map((l) => `
-          <div class="dim-row"><span style="flex:1">${esc(l.platform)}</span>
-            <span class="pill ${l.status === "ok" ? "pill-ok" : "pill-dim"}">${esc(l.status)}${l.note ? " · " + esc(l.note) : ""}</span></div>`).join("")}
+        ${Object.entries(login).length
+          ? Object.entries(login).map(([p, v]) => `
+            <div class="dim-row"><span style="flex:1">${esc(p)}</span>
+              <span class="pill ${(v === "ok" || (v && v.status === "ok")) ? "pill-ok" : "pill-dim"}">
+                ${esc(typeof v === "string" ? v : (v && v.status) || "未知")}</span></div>`).join("")
+          : `<div class="chart-note" style="text-align:left">还没有登录记录</div>`}
       </div>
     </div>`;
 
@@ -772,9 +804,11 @@ async function pageSettings() {
 // ---------------------------------------------------------------- 启动
 (async function boot() {
   const status = await call("status");
-  const dbOk = status && status.checks && status.checks.database;
+  const dbOk = !!(status && status.db && status.db.ok);
   const pill = $("#db-status");
-  pill.textContent = dbOk ? "数据库已连接" : "数据库未连接";
+  pill.textContent = dbOk
+    ? `已连接 · ${status.db.jobs} 岗位`
+    : "数据库未连接";
   pill.className = "pill " + (dbOk ? "pill-ok" : "pill-bad");
   router();
 })();
