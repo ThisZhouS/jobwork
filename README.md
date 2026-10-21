@@ -768,6 +768,26 @@ python -m boss_crawler app run --platforms cninfo --limit 3
 实测：康美药业 30 条里 4 条风险（诉讼/高管变动）、比亚迪 50 条 0 条风险、
 非上市公司 `EMPTY`。完整的源对比与合规边界见 [Tree/risk-sources.md](Tree/risk-sources.md)。
 
+### 5.13 可选：阿里云云市场风险接口
+
+天眼查 100 元起充，云市场同类接口**最低 2 元**（司法不良 ￥2/10 次、企业数据报告 ￥0/10 次）。
+接的是**配置化适配器**，不是某家接口的硬编码客户端：
+
+```powershell
+# 1) 在云市场买一个接口，把 AppCode 放进环境变量（不要写进配置文件）
+$env:ALIYUN_APPCODE = "你的 AppCode"
+# 2) 把商品页的「调用地址」拆成 base/path，连同字段映射填进 config/risk_api.json
+# 3) 跑
+python -m boss_crawler app run --platforms aliyun --limit 5
+```
+
+内置三个约束：AppCode 只从环境变量或 `.state/` 读；**调用预算**默认 20 次/进程
+（防配错刷爆余额）；缺 key 或没填地址时返回 `BLOCKED` 并说明缺什么，不会静默跳过。
+
+⚠️ 这个适配器**没有用真实 AppCode 验证过**（我没有购买记录）。离线测试覆盖了配置解析、
+URL 拼装、响应归一和各种降级；真实字段需要拿到接口后按返回调整 `fields`。
+详见 [Tree/risk-sources.md](Tree/risk-sources.md)。
+
 ## 6. BOSS直聘 反爬机制实测
 
 以下结论来自 `scripts/research/` 里的探测脚本与站点 JS，时间 2026-10。
@@ -842,7 +862,7 @@ BOSS直聘 的登录票据主要在 httpOnly Cookie 里，`document.cookie` 读�
 
 ```powershell
 python -m boss_crawler doctor
-python -m pytest -q                        # 447 条
+python -m pytest -q                        # 461 条
 python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销毁
 ```
 
@@ -852,6 +872,7 @@ python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销
 * `test_agents_core.py`（41 条）：契约、注册表、Pipeline、状态判定、抓取工具；
 * `test_agents_backduty.py`（56 条）：工具注册表与契约、各站点解析、被挡/壳页识别、agent 汇总；
 * `test_queue.py`（17 条）：重试、退避、去重、并发上限、优先级、超时；
+* `test_aliyun_risk.py`（14 条）：云市场适配器的配置、归一、缺 key、预算保护；
 * `test_cninfo.py`（22 条）：风险分类、日期解析、翻页、降级、标题清洗；
 * `test_agent_settings.py`（16 条）：agent 配置读写、校验、作用域覆盖、流水线跳过；
 * `test_secrets.py`（13 条）：密钥扫描器自身 + 仓库无密钥断言；

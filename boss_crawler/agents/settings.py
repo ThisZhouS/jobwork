@@ -148,7 +148,12 @@ def set_config(
         model=current.model if model is None else dict(model),
         options=current.options if options is None else dict(options),
     )
-    configs[name] = updated
+    # 与默认完全一致就不落盘：否则配置文件里会堆满
+    # {"enabled": true, "model": {}, "options": {}} 的噪声，看着像有意配过
+    if updated.enabled and not updated.model and not updated.options:
+        configs.pop(name, None)
+    else:
+        configs[name] = updated
     save(configs, path)
     return updated
 

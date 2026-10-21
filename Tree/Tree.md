@@ -18,7 +18,7 @@ E:\tmp\jobs\
 │   ├── industry_codes.py    行业码表（由站点探测生成）
 │   ├── embedding.py         向量化客户端（Ark doubao-embedding-vision）
 │   └── export.py            Excel/CSV 导出
-├── tests/                   单元测试（447 条，与包结构对应）
+├── tests/                   单元测试（461 条，与包结构对应）
 ├── scripts/                 一次性脚本，不属于生产路径
 │   ├── research/            早期接口探测与反爬调研留档
 │   └── anti_detect_check.py 反检测自检

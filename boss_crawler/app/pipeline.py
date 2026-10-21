@@ -40,6 +40,7 @@ PLATFORM_AGENTS: dict[str, str] = {
     "weibo": "weibo",
     "tieba": "tieba",
     "cninfo": "cninfo",
+    "aliyun": "aliyun",
 }
 
 DEFAULT_PLATFORMS = ("tianyancha", "cninfo", "zhihu", "weibo", "tieba")

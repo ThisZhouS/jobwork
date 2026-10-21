@@ -1,0 +1,49 @@
+{
+  "_说明": "阿里云云市场（API 市场）风险接口配方。买到接口后，把商品页上的『调用地址』拆成 base + path、把参数名填进 params、把响应字段填进 fields，无需改代码。AppCode 不要写在这里，放环境变量 ALIYUN_APPCODE 或 .state/aliyun_appcode.txt。",
+  "_怎么填": {
+    "base": "商品页『调用地址』的域名部分，例如 https://xxxx.market.alicloudapi.com",
+    "path": "域名后面的路径，例如 /enterprise/risk",
+    "params": "请求参数名 -> 值；用 {company} 占位公司名",
+    "items_path": "响应里行列表的位置（点号分隔）；留空表示自动找第一个字典列表",
+    "fields": "统一字段 -> 原始字段名，例如 case_no 填 案号 的实际字段"
+  },
+  "_参考行情": "司法不良（详版）￥2/10 次；全国企业数据报告 ￥0/10 次；企业工商信息 ￥2/5 次起、￥60/1000 次（2026-10 云市场商品页）",
+  "profiles": {
+    "judicial": {
+      "enabled": false,
+      "base": "",
+      "path": "",
+      "params": {
+        "keyword": "{company}"
+      },
+      "items_path": "",
+      "fields": {
+        "title": "caseName",
+        "risk_type": "caseType",
+        "case_no": "caseNo",
+        "court": "court",
+        "amount": "amount",
+        "date": "judgeTime",
+        "status": "status"
+      },
+      "budget": 20,
+      "note": "占位：把你在云市场购买的『司法不良（详版）』调用地址填进来"
+    },
+    "business": {
+      "enabled": false,
+      "base": "",
+      "path": "",
+      "params": {
+        "companyName": "{company}"
+      },
+      "items_path": "",
+      "fields": {
+        "title": "name",
+        "risk_type": "regStatus",
+        "date": "estiblishTime"
+      },
+      "budget": 20,
+      "note": "占位：把『企业工商信息查询』的调用地址填进来"
+    }
+  }
+}

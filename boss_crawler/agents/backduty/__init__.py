@@ -18,6 +18,7 @@ agent                        调用的工具
 from __future__ import annotations
 
 from ..toolagent import ToolAgent, ToolCall, rows_to_findings, sentiment_summary
+from .aliyun import AliyunRiskAgent
 from .cninfo import CninfoAgent
 from .tianyan_ai import TianyanAiAgent
 from .tianyancha_web import TianyanchaWebAgent
@@ -26,6 +27,7 @@ from .weibo import WeiboAgent
 from .zhihu import ZhihuAgent
 
 __all__ = [
+    "AliyunRiskAgent",
     "CninfoAgent",
     "TianyanAiAgent",
     "TianyanchaWebAgent",
