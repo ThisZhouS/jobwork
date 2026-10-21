@@ -28,7 +28,7 @@ const laborMini = (flag, reason) => {
 };
 const pct = (v) => (v === null || v === undefined) ? "—" : Math.round(Number(v)) + "%";
 
-const state = { data: null, filters: null, cloudKind: "all" };
+const state = { data: null, filters: null, cloudKind: "all", cfgTab: "agents" };
 
 async function call(action, args) {
   const res = await window.api.call(action, args || {});
@@ -1048,9 +1048,38 @@ async function pageResume(params) {
 }
 
 // ---------------------------------------------------------------- 设置
+/* 配置中心的两个面板：agent 与 模型，写回各自的 json */
+function cfgPanel(tab, status, models) {
+  if (tab === "models") {
+    return (models?.models || []).map((m) => `
+      <div class="cfg-row">
+        <label class="cfg-name">
+          <input type="checkbox" data-model-enabled="${esc(m.name)}" ${m.enabled ? "checked" : ""}>
+          <span>${esc(m.name)}</span>
+        </label>
+        <span class="pill pill-dim">${esc(m.kind)}</span>
+        <input class="cfg-input" data-model-id="${esc(m.name)}" value="${esc(m.model_id || "")}"
+               title="供应商侧模型 id，改完回车生效">
+        <span class="pill ${m.has_key ? "pill-ok" : "pill-warn"}">${m.has_key ? "有密钥" : "缺密钥"}</span>
+      </div>`).join("") || `<div class="empty">无模型</div>`;
+  }
+  return (status.agents || []).map((a) => `
+    <div class="cfg-row">
+      <label class="cfg-name">
+        <input type="checkbox" data-agent-enabled="${esc(a.name)}" ${a.enabled === false ? "" : "checked"}>
+        <span>${esc(a.name)}</span>
+      </label>
+      ${(a.model && Object.keys(a.model).length)
+        ? `<span class="pill pill-cyan" title="按能力覆盖模型">${esc(Object.values(a.model).join(","))}</span>`
+        : ""}
+      <span class="pill pill-dim">${esc(a.kind)}</span>
+    </div>`).join("") || `<div class="empty">无 agent</div>`;
+}
+
 async function pageSettings() {
   pageEl().innerHTML = `<div class="loading">加载中…</div>`;
   const [status, models] = await Promise.all([call("status"), call("models")]);
+  const cfgTab = state.cfgTab || "agents";
   if (!status) { pageEl().innerHTML = `<div class="empty">自检失败</div>`; return; }
 
   const db = status.db || {};
@@ -1078,23 +1107,6 @@ async function pageSettings() {
       </div>
 
       <div class="card">
-        <div class="card-head">${cardTitle("模型", "layers", true)}
-          <div class="card-sub">只显示有无密钥</div></div>
-        ${(models?.models || []).map((m) => `
-          <div class="rank-row">
-            <span class="rank-label" style="width:auto;flex:1">${esc(m.name)}
-              <span class="chart-note">${esc(m.kind)}</span></span>
-            ${m.enabled
-              ? (m.has_key ? `<span class="pill pill-ok">可用</span>` : `<span class="pill pill-warn">缺密钥</span>`)
-              : `<span class="pill pill-dim">停用</span>`}
-          </div>
-          ${m.note ? `<div class="chart-note left" style="margin:-2px 0 8px">${esc(m.note)}</div>` : ""}
-        `).join("") || `<div class="empty">无模型</div>`}
-      </div>
-    </div>
-
-    <div class="grid grid-2 section">
-      <div class="card">
         <div class="card-head">${cardTitle("数据源", "briefcase", true)}</div>
         ${(status.sources || []).map((s) => `
           <div class="rank-row">
@@ -1104,23 +1116,19 @@ async function pageSettings() {
           </div>`).join("")}
         <div class="chart-note left">预留插槽：实现 build_steps 即可接入新平台</div>
       </div>
+    </div>
 
-      <div class="card">
-        <div class="card-head">${cardTitle("agent 配置", "layers", true)}
-          <div class="card-sub">取消勾选即停用，立即生效</div></div>
-        ${(status.agents || []).map((a) => `
-          <div class="rank-row">
-            <label style="flex:1;display:flex;align-items:center;gap:9px;cursor:pointer;min-width:0">
-              <input type="checkbox" data-agent-enabled="${esc(a.name)}" ${a.enabled === false ? "" : "checked"}>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
-            </label>
-            ${(a.model && Object.keys(a.model).length)
-              ? `<span class="pill pill-cyan" title="按能力覆盖模型">${esc(Object.values(a.model).join(","))}</span>`
-              : ""}
-            <span class="pill pill-dim">${esc(a.kind)}</span>
-          </div>`).join("") || `<div class="empty">无 agent</div>`}
-        <div class="chart-note left">配置文件：config/agents.json · 命令行 app agent-set --name X --disable</div>
+    <div class="card section">
+      <div class="card-head">
+        ${cardTitle("配置中心", "cog", true)}
+        <div class="seg" id="cfg-tabs">
+          <button class="seg-btn ${cfgTab === "agents" ? "active" : ""}" data-cfg-tab="agents">agent</button>
+          <button class="seg-btn ${cfgTab === "models" ? "active" : ""}" data-cfg-tab="models">模型</button>
+        </div>
       </div>
+      <div id="cfg-body">${cfgPanel(cfgTab, status, models)}</div>
+      <div class="chart-note left">写回 config/${cfgTab === "agents" ? "agents.json" : "models.json"}，
+        改动立即生效；命令行同样可改（app agent-set / model-set）</div>
     </div>
 
     <div class="card section">
@@ -1154,22 +1162,75 @@ async function pageSettings() {
   $("#btn-refresh").addEventListener("click", router);
 
   // agent 开关：勾选状态直接写回 config/agents.json
-  $$("[data-agent-enabled]").forEach((box) => box.addEventListener("change", async () => {
-    const name = box.dataset.agentEnabled;
-    const enable = box.checked;
-    const res = await window.api.call("agent-set", enable
-      ? { name, enable: true }
-      : { name, disable: true });
-    if (res.code !== 0) {
-      chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
-      openDrawer();
-      box.checked = !enable;   // 回滚界面状态
-      return;
-    }
-    chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
-    const fresh = await call("status");
-    if (fresh) state.status = fresh;
-  }));
+  bindAgentToggles();
+  bindConfigTabs();
+
+  // 数据源 / 模型 / agent 三块一起刷新
+  async function bindAgentToggles() {
+    $$("[data-agent-enabled]").forEach((box) => box.addEventListener("change", async () => {
+      const name = box.dataset.agentEnabled;
+      const enable = box.checked;
+      const res = await window.api.call("agent-set", enable
+        ? { name, enable: true }
+        : { name, disable: true });
+      if (res.code !== 0) {
+        chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+        openDrawer();
+        box.checked = !enable;   // 回滚界面状态
+        return;
+      }
+      chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
+      const fresh = await call("status");
+      if (fresh) state.status = fresh;
+    }));
+
+    // 模型开关与模型 id
+    $$("[data-model-enabled]").forEach((box) => box.addEventListener("change", async () => {
+      const name = box.dataset.modelEnabled;
+      const enable = box.checked;
+      const res = await window.api.call("model-set", enable
+        ? { spec: name, enable: true }
+        : { spec: name, disable: true });
+      if (res.code !== 0) {
+        chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+        openDrawer();
+        box.checked = !enable;
+        return;
+      }
+      chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
+    }));
+
+    $$("[data-model-id]").forEach((input) => input.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter") return;
+      const name = input.dataset.modelId;
+      const value = input.value.trim();
+      if (!value) return;
+      const res = await window.api.call("model-set", { spec: name, "model-id": value });
+      if (res.code !== 0) {
+        chatLog("err", "配置", `${name} 的模型 id 写入失败：${(res.stderr || res.stdout || "").trim()}`);
+        openDrawer();
+        return;
+      }
+      chatLog("step", "配置", `${name} 模型 id 改为 ${value}`);
+      input.blur();
+    }));
+  }
+
+  // 子页签：agent / 模型，切页只重绘面板，不重拉数据
+  function bindConfigTabs() {
+    $$("[data-cfg-tab]").forEach((btn) => btn.addEventListener("click", () => {
+      state.cfgTab = btn.dataset.cfgTab;
+      $$("[data-cfg-tab]").forEach((b) => b.classList.toggle("active", b === btn));
+      const body = $("#cfg-body");
+      if (body) body.innerHTML = cfgPanel(state.cfgTab, status, models);
+      const note = $(".chart-note.left:last-of-type");
+      if (note) {
+        note.textContent = `写回 config/${state.cfgTab === "agents" ? "agents.json" : "models.json"}` +
+          "，改动立即生效；命令行同样可改（app agent-set / model-set）";
+      }
+      bindAgentToggles();   // 新面板要重新绑定
+    }));
+  }
   $("#btn-login").addEventListener("click", async () => {
     const platforms = $$("input[data-login]:checked").map((n) => n.dataset.login);
     if (!platforms.length) { chatLog("err", "校验", "请选择平台"); openDrawer(); return; }

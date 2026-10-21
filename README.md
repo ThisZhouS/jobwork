@@ -686,7 +686,16 @@ python -m boss_crawler app agent-reset --name zhihu      # 恢复默认
 - 写错会**报错而不是忽略**——未注册的 agent、不存在的模型规格一律拒绝。
   这道校验是有意为之：配置写错的代价是"以为生效了其实没有"，比报错更难查。
 
-桌面端「设置 → agent 配置」里的勾选框直接写这个文件。
+模型配置同理（`config/models.json`）：
+
+```powershell
+python -m boss_crawler app model-set --spec chat.doubao --disable
+python -m boss_crawler app model-set --spec embedding.doubao --dimension 1024
+python -m boss_crawler app model-reset --spec embedding.doubao
+```
+
+桌面端把两者合成一个「配置中心」页签（内部两个子页签：agent / 模型），
+勾选框和模型 id 输入框都直接写回配置，写完立即生效。
 
 ## 5.10 密钥与安全检查
 
@@ -707,6 +716,57 @@ python tools/check_secrets.py --all      # 扫工作区（含未跟踪）
 
 **密钥只从两处读**：环境变量，或 `.state/` 下的文件（该目录已被忽略）。
 命令行不接受 `--key` 参数——命令行会进 shell 历史，也会出现在进程列表里。
+
+## 5.11 任务队列与重试（对标 Scrapy）
+
+背调阶段原来是「公司 × 平台」两层串行 for，4 个平台就是 4 倍墙钟时间，
+任何一个平台被限流整段就卡住。现在换成队列驱动：
+
+```powershell
+python -m boss_crawler app run --concurrency 3 --retries 3 --task-timeout 120
+```
+
+| 参数 | 默认 | 对应 Scrapy |
+|---|---|---|
+| `--concurrency` | 3 | `CONCURRENT_REQUESTS` |
+| `--retries` | 3 | `RETRY_TIMES`（含首次） |
+| `--task-timeout` | 120 | `DOWNLOAD_TIMEOUT` |
+
+保留了三个特性：**并发上限**、**同名任务去重**（键是 `agent:公司`）、
+**指数退避 + 抖动**（`min(base·factor^n, max)·(1±0.25)`，抖动是为了避免被限流后
+齐刷刷重试）。重试会作为事件播出来，不会静默变慢：
+
+```
+! zhihu: 第 1 次尝试失败，0.4s 后重试：RuntimeError: HTTP 429
+* backduty [done] 3 家公司，证据 0 条，并发 3，重试 0 次
+```
+
+退出时会带 `summary['queue']`（submitted/succeeded/failed/retried/timed_out），
+事后能看出这次到底重试了几次。详见 [Tree/app-queue.md](Tree/app-queue.md)。
+
+刻意不引入 Celery/Redis：单进程本地工具，外部 broker 只会让"跑起来"变复杂。
+
+## 5.12 天眼查「风险提示」的平替：巨潮资讯
+
+天眼查的风险提示要付费接口（100 元起充），企查查反而更贵（单次 0.3 元但
+**最低充值 500** 且要企业实名）。调研下来唯一「免费 + 免鉴权 + 结构化」的是
+**巨潮资讯**的公告接口：
+
+```powershell
+python -m boss_crawler app run --platforms cninfo --limit 3
+```
+
+- `POST /new/hisAnnouncement/query`，表单 `searchkey=公司名`，无需 token；
+- 标题按关键词判 `立案调查 / 重大诉讼 / 失信被执行 / 经营异常 / 股权风险 /
+  业绩预警 / 监管问询 / 高管变动`，其余归其他公告；
+- 自动翻页（单页 30 条），毫秒时间戳转日期，去掉 `<em>` 高亮标签。
+
+**边界必须说清**：它只覆盖**上市公司**。查非上市企业返回 `EMPTY` 并注明
+「非上市公司的正常结果」——**信息不足不等于安全**，工具不会因此给正面分。
+有公告但全是常规公告时返回 `PARTIAL`，并附「这不等于无风险」。
+
+实测：康美药业 30 条里 4 条风险（诉讼/高管变动）、比亚迪 50 条 0 条风险、
+非上市公司 `EMPTY`。完整的源对比与合规边界见 [Tree/risk-sources.md](Tree/risk-sources.md)。
 
 ## 6. BOSS直聘 反爬机制实测
 
@@ -782,7 +842,7 @@ BOSS直聘 的登录票据主要在 httpOnly Cookie 里，`document.cookie` 读�
 
 ```powershell
 python -m boss_crawler doctor
-python -m pytest -q                        # 408 条
+python -m pytest -q                        # 447 条
 python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销毁
 ```
 
@@ -791,6 +851,8 @@ python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销
   「code 7 → 抛登录异常」「重试次数有上限」，不触网；
 * `test_agents_core.py`（41 条）：契约、注册表、Pipeline、状态判定、抓取工具；
 * `test_agents_backduty.py`（56 条）：工具注册表与契约、各站点解析、被挡/壳页识别、agent 汇总；
+* `test_queue.py`（17 条）：重试、退避、去重、并发上限、优先级、超时；
+* `test_cninfo.py`（22 条）：风险分类、日期解析、翻页、降级、标题清洗；
 * `test_agent_settings.py`（16 条）：agent 配置读写、校验、作用域覆盖、流水线跳过；
 * `test_secrets.py`（13 条）：密钥扫描器自身 + 仓库无密钥断言；
 * `test_models_and_views.py`（43 条）：模型规格/开关/覆盖/降级、劳务派遣三态、前端视图契约；

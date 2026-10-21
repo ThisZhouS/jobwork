@@ -286,6 +286,35 @@ th.center, td.center { text-align: center; }
 .chip:hover { color: var(--text); border-color: var(--text-faint); }
 .chip.active { background: var(--cyan); border-color: var(--cyan); color: #06202a; font-weight: 600; }
 
+/* 分段控件（设置页的两个子页签） */
+.seg {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--bg-input); border: 1px solid var(--line); border-radius: 10px;
+}
+.seg-btn {
+  border: 0; background: transparent; color: var(--text-dim);
+  font-family: inherit; font-size: 12.5px; padding: 5px 15px;
+  border-radius: 7px; cursor: pointer; transition: all .14s;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: rgba(34, 211, 238, .16); color: var(--cyan); font-weight: 600; }
+
+/* 可编辑的配置行 */
+.cfg-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+}
+.cfg-row:last-child { border-bottom: 0; }
+.cfg-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; cursor: pointer; }
+.cfg-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-input {
+  width: 210px; padding: 6px 10px; font-size: 12px; font-family: inherit;
+  background: var(--bg-input); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--text);
+}
+.cfg-input:focus { outline: 0; border-color: var(--cyan); }
+.cfg-input.dim { width: 76px; }
+
 /* 榜单（右栏） */
 .rank-row {
   display: flex; align-items: center; gap: 10px;

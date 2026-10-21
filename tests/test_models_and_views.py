@@ -244,8 +244,9 @@ def test_filter_options_include_all_boss_platforms():
 
     platforms = next(item for item in filter_options()["toggles"]
                      if item["field"] == "platforms")
-    assert set(platforms["options"]) == {"tianyancha", "tianyan_ai", "zhihu",
-                                         "weibo", "tieba"}
+    # cninfo（巨潮资讯）是天眼查风险提示的免费平替，免登录
+    assert set(platforms["options"]) == {"tianyancha", "tianyan_ai", "cninfo",
+                                         "zhihu", "weibo", "tieba"}
 
 
 # ---------------------------------------------------------------- 技能分类
