@@ -169,11 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("action",
                          choices=["status", "init", "login", "run", "data", "resume",
                                   "filters", "cloud", "company", "job", "series", "models",
-                                  "agents", "agent-set", "agent-reset"],
+                                  "agents", "agent-set", "agent-reset",
+                                  "model-set", "model-reset"],
                          help="status=自检 init=建表 login=弹窗登录 run=跑流水线 "
                               "data=列表 filters=筛选项 cloud=技能词云 company=公司详情 "
                               "job=岗位详情 series=维度折线 models=模型规格 "
-                              "agents=agent 配置 agent-set=改配置 agent-reset=恢复默认")
+                              "agents=agent 配置 agent-set=改配置 agent-reset=恢复默认 "
+                              "model-set=改模型配置 model-reset=恢复默认")
     app_cmd.add_argument("--platforms", default=None,
                          help="逗号分隔的平台开关，如 tianyancha,zhihu,weibo,tieba（默认全开）")
     app_cmd.add_argument("--source", default="boss", help="招聘数据源（默认 boss）")
@@ -184,6 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--experience", default=None, help="工作经验，如 3-5年")
     app_cmd.add_argument("--degree", default=None, help="学历要求")
     app_cmd.add_argument("--limit", type=int, default=20, help="参与背调的公司数")
+    app_cmd.add_argument("--concurrency", type=int, default=3,
+                         help="背调任务并发数（对标 Scrapy CONCURRENT_REQUESTS）")
+    app_cmd.add_argument("--retries", type=int, default=3,
+                         help="单个任务最多尝试几次（含首次）")
+    app_cmd.add_argument("--task-timeout", type=float, default=120.0,
+                         help="单个任务的超时秒数")
     app_cmd.add_argument("--job-limit", type=int, default=50, help="参与适配度的岗位数")
     app_cmd.add_argument("--no-crawl", action="store_true", help="跳过采集（库里已有岗位时用）")
     app_cmd.add_argument("--no-backduty", action="store_true", help="跳过背调")
@@ -202,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
                          help="agent-set：按能力指定模型，如 chat=chat.doubao（可多次用逗号分隔）")
     app_cmd.add_argument("--option", default=None,
                          help="agent-set：透传选项，如 key=value（逗号分隔）")
+    # 模型配置
+    app_cmd.add_argument("--spec", default=None,
+                         help="model-set/model-reset 动作：模型规格名，如 chat.doubao")
+    app_cmd.add_argument("--model-id", default=None, help="model-set：供应商侧模型 id")
+    app_cmd.add_argument("--dimension", type=int, default=None, help="model-set：向量维度")
     app_cmd.add_argument("--resume", default=None, help="简历 JSON 文件路径")
     app_cmd.add_argument("--state", default=".state/login", help="登录态目录")
     app_cmd.add_argument("--timeout", type=float, default=300.0, help="登录等待秒数")

@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable
 from ..agents import AgentContext, AgentRequest, Finding, get
 from ..store.app_store import AppStore
 from . import sources
+from .queue import RetryPolicy, TaskQueue
 
 Emit = Callable[[dict], Any]
 
@@ -38,9 +39,10 @@ PLATFORM_AGENTS: dict[str, str] = {
     "zhihu": "zhihu",
     "weibo": "weibo",
     "tieba": "tieba",
+    "cninfo": "cninfo",
 }
 
-DEFAULT_PLATFORMS = ("tianyancha", "zhihu", "weibo", "tieba")
+DEFAULT_PLATFORMS = ("tianyancha", "cninfo", "zhihu", "weibo", "tieba")
 
 
 @dataclass
@@ -60,12 +62,24 @@ class Options:
     resume: dict[str, Any] | None = None
     no_browser: bool = False
     state_root: str = ".state/login"
+    concurrency: int = 3            # 并发执行几个 agent 任务
+    retries: int = 3                # 单个任务最多尝试几次（含首次）
+    task_timeout: float = 120.0     # 单个任务超时（秒）
 
     def to_dict(self) -> dict:
         data = dict(self.__dict__)
         data["platforms"] = list(self.platforms)
         data.pop("resume", None)      # 简历内容不进运行记录
         return data
+
+
+def queue_options(options: Options) -> dict:
+    """把运行参数翻译成队列参数，便于测试与统一口径。"""
+    return {
+        "workers": max(1, int(options.concurrency)),
+        "timeout": float(options.task_timeout),
+        "max_attempts": max(1, int(options.retries)),
+    }
 
 
 class Pipeline:
@@ -123,10 +137,15 @@ class Pipeline:
                    "detail": result.get("reason") or "岗位已入库"})
 
     async def stage_backduty(self, run_id: int) -> None:
+        """公司 × 平台 的背调任务丢进队列并发跑，失败的按退避策略重试。
+
+        原来这里是两层 ``for`` 串行：4 个平台 × N 家公司，实际耗时是总和，
+        而且某个平台被限流时整段卡住。改成队列后耗时接近
+        ``总任务数 / 并发数``，单个任务失败也不再影响其他任务。
+        """
         companies = self.store.company_targets(limit=self.options.limit)
-        done = 0
-        evidence_total = 0
-        for index, company in enumerate(companies, start=1):
+        targets: list[tuple[str, str, str]] = []
+        for company in companies:
             name = str(company.get("company_name") or company.get("company_key") or "")
             key = str(company.get("company_key") or name)
             if not name:
@@ -136,23 +155,86 @@ class Pipeline:
                 if agent_name is None:
                     self._warn(platform, f"没有对应 {platform} 的背调 agent，已跳过")
                     continue
-                self.emit({"type": "progress", "name": f"backduty:{platform}",
-                           "current": index, "total": len(companies), "message": name})
-                result = await self._run_agent(agent_name, AgentRequest(
-                    company_name=name, company_key=key))
-                if result is None:
-                    continue
-                if result.findings:
-                    evidence_total += self.store.save_evidence(
-                        key, agent_name, result.findings, run_id=run_id)
-                if result.status.value in ("blocked", "failed", "empty"):
-                    self.emit({"type": "error", "agent": agent_name,
-                               "message": result.error or "；".join(result.notes[:1])})
-            done += 1
-        self.summary["companies"] = done
+                targets.append((platform, agent_name, f"{key}\x00{name}"))
+
+        if not targets:
+            self.summary["companies"] = 0
+            self.summary["evidence"] = 0
+            self.emit({"type": "step", "name": "backduty", "status": "done",
+                       "detail": "没有可跑的背调任务"})
+            return
+
+        counter = {"n": 0}
+        total = len(targets)
+        queue = TaskQueue(
+            workers=max(1, int(self.options.concurrency)),
+            timeout=float(self.options.task_timeout),
+            retry=RetryPolicy(max_attempts=max(1, int(self.options.retries))),
+            on_event=self._queue_event,
+        )
+        for platform, agent_name, packed in targets:
+            key, name = packed.split("\x00", 1)
+            queue.submit(f"{agent_name}:{key}",
+                         self._backduty_task(platform, agent_name, name, key,
+                                             counter, total))
+
+        results = await queue.run()
+
+        evidence_total = 0
+        touched: set[str] = set()
+        for item in results:
+            if not item.ok:
+                self.emit({"type": "error", "agent": item.key.split(":", 1)[0],
+                           "message": item.error or "任务失败"})
+                continue
+            payload = item.value or {}
+            key = payload.get("key") or ""
+            if key:
+                touched.add(key)
+            if payload.get("findings"):
+                evidence_total += self.store.save_evidence(
+                    key, payload["agent"], payload["findings"], run_id=run_id)
+            if payload.get("status") in ("blocked", "failed", "empty"):
+                self.emit({"type": "error", "agent": payload["agent"],
+                           "message": payload.get("error")
+                           or "；".join(list(payload.get("notes") or [])[:1])})
+
+        self.summary["companies"] = len(touched)
         self.summary["evidence"] = evidence_total
+        self.summary["queue"] = queue.summary()
         self.emit({"type": "step", "name": "backduty", "status": "done",
-                   "detail": f"{done} 家公司，证据 {evidence_total} 条"})
+                   "detail": f"{len(touched)} 家公司，证据 {evidence_total} 条，"
+                             f"并发 {queue.workers}，重试 {queue.stats['retried']} 次"})
+
+    def _backduty_task(self, platform: str, agent_name: str, name: str, key: str,
+                       counter: dict, total: int):
+        """构造一个背调任务。异常交给队列判定是否重试。"""
+
+        async def run_task() -> dict:
+            result = await self._run_agent(agent_name, AgentRequest(
+                company_name=name, company_key=key))
+            counter["n"] += 1
+            self.emit({"type": "progress", "name": f"backduty:{platform}",
+                       "current": counter["n"], "total": total, "message": name})
+            if result is None:
+                return {"key": key, "agent": agent_name, "findings": [],
+                        "status": "skipped", "error": None, "notes": []}
+            return {"key": key, "agent": agent_name, "findings": list(result.findings),
+                    "status": result.status.value, "error": result.error,
+                    "notes": list(result.notes)}
+
+        return run_task
+
+    def _queue_event(self, event: dict) -> None:
+        """队列事件翻译成流水线事件（重试要让人看见，否则只会觉得"慢"）。"""
+        kind = event.get("type")
+        if kind == "retry":
+            self.emit({"type": "warn", "name": event.get("key", ""),
+                       "message": f"第 {event.get('attempt')} 次尝试失败，"
+                                  f"{event.get('delay')}s 后重试：{event.get('error')}"})
+        elif kind == "task_timeout":
+            self.emit({"type": "warn", "name": event.get("key", ""),
+                       "message": "任务超时"})
 
     async def stage_company_score(self, run_id: int) -> None:
         companies = self.store.company_targets(limit=self.options.limit)

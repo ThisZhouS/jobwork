@@ -144,6 +144,34 @@ class HttpFetcher:
 
         return json.loads(await self.get(url, **kwargs))
 
+    async def post(self, url: str, *, data: Any = None, **kwargs: Any) -> str:
+        """取文本（POST）。节流/重试语义与 :meth:`get` 一致。
+
+        巨潮资讯这类公告接口只接受 POST 表单，所以必须有这个方法；
+        把它放在 HttpFetcher 里，工具就不用各自造轮子。
+        """
+        client = await self._ensure_client()
+        last_error: Exception | None = None
+        for attempt in range(self.retries + 1):
+            await self._throttle(url)
+            try:
+                response = await client.post(url, data=data, **kwargs)
+                if response.status_code in (408, 425, 429, 500, 502, 503, 504):
+                    raise RuntimeError(f"HTTP {response.status_code}")
+                response.raise_for_status()
+                return response.text
+            except Exception as exc:  # noqa: BLE001 - 统一转成重试
+                last_error = exc
+                if attempt >= self.retries:
+                    break
+                await asyncio.sleep(self.retry_policy.delay_for(attempt + 1))
+        raise RuntimeError(f"请求失败：{url}（{last_error}）")
+
+    async def post_json(self, url: str, *, data: Any = None, **kwargs: Any) -> Any:
+        import json
+
+        return json.loads(await self.post(url, data=data, **kwargs))
+
 
 def _host_of(url: str) -> str:
     try:

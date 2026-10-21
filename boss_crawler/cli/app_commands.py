@@ -184,6 +184,9 @@ def cmd_app(args) -> int:
                 resume=_read_json(args.resume),
                 no_browser=args.no_browser,
                 state_root=args.state,
+                concurrency=getattr(args, "concurrency", 3),
+                retries=getattr(args, "retries", 3),
+                task_timeout=getattr(args, "task_timeout", 120.0),
             )
             result = asyncio.run(run_pipeline(store, options,
                                               ctx=AgentContext(db=db), emit=emit))
@@ -205,6 +208,51 @@ def cmd_app(args) -> int:
                     dim_text = " ".join(f"{k}{v:.0f}" for k, v in dims.items())
                     print(f"  {str(row['name'])[:22]:<24} "
                           f"{score.get('total') or 0:5.1f} {score.get('grade') or '-':<2} {dim_text}")
+            return 0
+
+        if args.action == "model-set":
+            from ..agents.models import save_override
+
+            if not args.spec:
+                print("需要 --spec")
+                return 2
+            if args.enable and args.disable:
+                print("--enable 与 --disable 不能同时给")
+                return 2
+            changes: dict[str, Any] = {}
+            if args.enable:
+                changes["enabled"] = True
+            elif args.disable:
+                changes["enabled"] = False
+            if args.model_id is not None:
+                changes["model_id"] = args.model_id
+            if args.dimension is not None:
+                changes["dimension"] = args.dimension
+            if not changes:
+                print("没有要改的项（用 --enable/--disable/--model-id/--dimension）")
+                return 2
+            try:
+                payload = save_override(args.spec, **changes)
+            except (KeyError, ValueError) as exc:
+                print(f"配置失败：{exc}")
+                return 2
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                spec = payload["spec"]
+                print(f"{spec['name']} 已更新：enabled={spec['enabled']} "
+                      f"model_id={spec['model_id']} dimension={spec['dimension']}")
+            return 0
+
+        if args.action == "model-reset":
+            from ..agents.models import reset_override
+
+            if not args.spec:
+                print("需要 --spec")
+                return 2
+            payload = reset_override(args.spec)
+            print(f"{payload['name']} 已恢复默认"
+                  f"{'' if payload['removed'] else '（本来就没有覆盖项）'}")
             return 0
 
         if args.action == "agents":

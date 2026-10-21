@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from .cninfo import CninfoNoticesTool
 from .tianyancha import (
     TianyanchaCompanyTool,
     TianyanchaRiskTool,
@@ -15,6 +16,7 @@ from .weibo import WeiboSearchTool
 from .zhihu import ZhihuSearchTool
 
 __all__ = [
+    "CninfoNoticesTool",
     "TianyanchaCompanyTool",
     "TianyanchaRiskTool",
     "TianyanchaSearchTool",

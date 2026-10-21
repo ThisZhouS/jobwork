@@ -243,8 +243,13 @@ def apply_overrides(path: Path | None = None) -> dict:
         spec = _MODELS.get(name)
         if spec is None or not isinstance(changes, dict):
             continue
+        # 下划线开头的是人写的注释（如 _why），不是规格字段
+        changes = {k: v for k, v in changes.items() if not str(k).startswith("_")}
         merged = {**spec.__dict__, **changes}
-        _MODELS[name] = ModelSpec(**merged)
+        try:
+            _MODELS[name] = ModelSpec(**merged)
+        except TypeError:
+            continue   # 写错的字段就跳过，别让整份配置失效
         applied += 1
     for raw in data.get("extra") or []:
         if not isinstance(raw, dict) or raw.get("name") in _MODELS:
@@ -255,6 +260,110 @@ def apply_overrides(path: Path | None = None) -> dict:
         except Exception:  # noqa: BLE001 - 单条写错就跳过
             continue
     return {"applied": applied, "added": added}
+
+
+# ---------------------------------------------------------------- 写回覆盖
+#: 允许通过配置改的字段。故意不含 ``api_key``/``api_key_env``：
+#: 密钥永远不入配置文件，只从环境变量或 .state/ 读。
+WRITABLE_FIELDS = ("enabled", "model_id", "dimension", "note", "provider")
+
+
+def overrides_document(path: Path | None = None) -> dict:
+    """读原始覆盖文档（保留 ``_说明`` 等人工注释）。"""
+    path = path or overrides_path()
+    if not path.exists():
+        return {"overrides": {}, "extra": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"overrides": {}, "extra": []}
+    data.setdefault("overrides", {})
+    data.setdefault("extra", [])
+    return data
+
+
+def save_override(name: str, path: Path | None = None, **changes) -> dict:
+    """改一个模型规格并写回 ``config/models.json``，立即生效。
+
+    只接受 :data:`WRITABLE_FIELDS`，写错字段直接报错——静默忽略会让人
+    以为配置生效了，这类问题比报错难查得多。
+    """
+    _load_builtin()
+    if name not in _MODELS:
+        raise KeyError(f"未知模型规格：{name}（可用：{'、'.join(sorted(_MODELS))}）")
+    unknown = set(changes) - set(WRITABLE_FIELDS)
+    if unknown:
+        raise ValueError(f"不能写这些字段：{'、'.join(sorted(unknown))}"
+                         f"（可写：{'、'.join(WRITABLE_FIELDS)}）")
+    if "dimension" in changes and changes["dimension"] is not None:
+        try:
+            changes["dimension"] = int(changes["dimension"])
+        except (TypeError, ValueError):
+            raise ValueError("dimension 必须是整数") from None
+
+    path = path or overrides_path()
+    data = overrides_document(path)
+    current = {k: v for k, v in (data["overrides"].get(name) or {}).items()
+               if not str(k).startswith("_")}
+    # 只留下确实需要覆盖的字段，避免把默认值抄进配置文件
+    spec = _MODELS[name]
+    for key, value in changes.items():
+        if value is None:
+            current.pop(key, None)
+        elif getattr(spec, key, None) == value and key != "enabled":
+            current.pop(key, None)   # 与默认相同就不写
+        else:
+            current[key] = value
+    # 保留原有注释，别把 _why 之类的人工说明冲掉
+    notes = {k: v for k, v in (data["overrides"].get(name) or {}).items()
+             if str(k).startswith("_")}
+    if current or notes:
+        data["overrides"][name] = {**notes, **current}
+    else:
+        data["overrides"].pop(name, None)
+    _write_document(data, path)
+    apply_overrides(path)
+    return {"name": name, "override": current, "spec": describe_spec(name)}
+
+
+def reset_override(name: str, path: Path | None = None) -> dict:
+    """删掉该规格的覆盖项，恢复代码里的默认。"""
+    path = path or overrides_path()
+    data = overrides_document(path)
+    existed = data["overrides"].pop(name, None) is not None
+    _write_document(data, path)
+    reset_models()
+    apply_overrides(path)
+    return {"name": name, "removed": existed}
+
+
+def _write_document(data: dict, path: Path) -> None:
+    """原子写：临时文件 + 替换，避免写坏配置文件。"""
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    handle, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def describe_spec(name: str) -> dict:
+    """单个规格的安全视图（绝不包含密钥本身）。"""
+    spec = _MODELS[name]
+    return {
+        "name": spec.name, "kind": spec.kind, "provider": spec.provider,
+        "model_id": spec.model_id, "enabled": spec.enabled,
+        "dimension": spec.dimension, "note": spec.note,
+        "has_key": bool(spec.api_key()),
+        "writable": list(WRITABLE_FIELDS),
+    }
 
 
 # ---------------------------------------------------------------- 调用器
