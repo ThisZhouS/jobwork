@@ -53,6 +53,13 @@ def test_corrupt_file_does_not_raise(cfg):
     assert agent_settings.load(cfg) == {}
 
 
+def test_noop_write_does_not_persist_entry(cfg):
+    """写成"和默认一样"时不留条目，避免配置文件堆满无意义的 enabled:true。"""
+    agent_settings.set_config("zhihu", enabled=True, path=cfg)
+    assert agent_settings.load(cfg) == {}
+    assert "zhihu" not in cfg.read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------------------- 校验
 def test_unknown_agent_rejected(cfg):
     with pytest.raises(ValueError):

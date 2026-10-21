@@ -37,7 +37,7 @@ def filter_options() -> dict[str, Any]:
     ]
     out["toggles"] = [
         {"field": "platforms", "label": "背调平台",
-         "options": ["tianyancha", "tianyan_ai", "cninfo", "zhihu", "weibo", "tieba"]},
+         "options": ["tianyancha", "tianyan_ai", "cninfo", "aliyun", "zhihu", "weibo", "tieba"]},
         {"field": "enable_company_score", "label": "公司打分"},
         {"field": "enable_job_fit", "label": "岗位适配度"},
         {"field": "enable_resume", "label": "定向简历"},

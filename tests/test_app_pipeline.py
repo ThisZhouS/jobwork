@@ -94,7 +94,8 @@ async def test_login_unknown_platform_returns_reason():
 # ---------------------------------------------------------------- 选项
 def test_options_defaults_match_plan():
     options = Options()
-    assert set(options.platforms) == set(PLATFORM_AGENTS) - {"tianyan_ai"}
+    # tianyan_ai 要走 tyc CLI、aliyun 要 AppCode 且按次计费，都不进默认平台
+    assert set(options.platforms) == set(PLATFORM_AGENTS) - {"tianyan_ai", "aliyun"}
     assert options.enable_crawl and options.enable_backduty
     assert options.enable_company_score and options.enable_job_fit
     assert options.enable_resume is False          # 简历默认关，用户确认后才开
