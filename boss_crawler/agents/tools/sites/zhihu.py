@@ -9,14 +9,14 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from ...base import AgentStatus
 from ..base import Tool, ToolBox, ToolResult, register_tool
-from ..parsing import extract_json_after, normalize_date, strip_tags
+from ..parsing import (extract_json_after, extract_json_object,
+                       normalize_date, strip_tags)
 
 _QUESTION_URL = "https://www.zhihu.com/question/{id}"
 _ARTICLE_URL = "https://zhuanlan.zhihu.com/p/{id}"
@@ -87,9 +87,8 @@ def _json_blocked(html: str) -> bool:
 
 def parse_search_json(text: str, company: str) -> list[dict]:
     """解析 ``search_v3`` 返回。条目在 ``data[]``，正文在 ``object`` 里。"""
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+    payload = extract_json_object(text)
+    if not isinstance(payload, dict):
         return []
     rows = payload.get("data") or []
     if not isinstance(rows, list):
@@ -128,8 +127,10 @@ def parse_search_json(text: str, company: str) -> list[dict]:
 def object_url(obj: dict[str, Any], kind: str) -> str:
     """把 API 里的各种 id 拼成人类可点的页面地址。"""
     raw = obj.get("url") or ""
-    if isinstance(raw, str) and raw.startswith("http") and "/api/" not in raw:
-        return raw
+    if isinstance(raw, str) and raw.startswith("http"):
+        host = urlparse(raw).netloc.lower()
+        if not host.startswith("api."):
+            return raw
     if kind == "answer":
         question_id = (obj.get("question") or {}).get("id")
         if question_id:

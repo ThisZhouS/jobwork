@@ -22,10 +22,12 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from ..agents import AgentContext, AgentRequest, Finding, get
+from .. import config
 from ..store.app_store import AppStore
 from . import sources
 from .queue import RetryPolicy, TaskQueue
@@ -53,6 +55,7 @@ class Options:
     platforms: tuple[str, ...] = DEFAULT_PLATFORMS
     source: str = "boss"
     filters: dict[str, Any] = field(default_factory=dict)
+    company_key: str | None = None   # 只跑指定公司（检测/调试用）
     limit: int = 20                 # 参与背调的公司数
     job_limit: int = 50             # 参与适配度的岗位数
     enable_crawl: bool = True
@@ -62,7 +65,7 @@ class Options:
     enable_resume: bool = False
     resume: dict[str, Any] | None = None
     no_browser: bool = False
-    state_root: str = ".state/login"
+    state_root: str = str(config.STATE_DIR / "login")
     concurrency: int = 3            # 并发执行几个 agent 任务
     retries: int = 3                # 单个任务最多尝试几次（含首次）
     task_timeout: float = 120.0     # 单个任务超时（秒）
@@ -127,6 +130,14 @@ class Pipeline:
         return {"run_id": run_id, "status": status, "summary": self.summary}
 
     # ------------------------------------------------------------------ 阶段
+    def _companies(self) -> list[dict]:
+        """本次参与背调/评分的公司；指定 company_key 时只取这一家。"""
+        if self.options.company_key:
+            companies = self.store.company_targets(limit=None)
+            return [row for row in companies
+                    if str(row.get("company_key")) == self.options.company_key]
+        return self.store.company_targets(limit=self.options.limit)
+
     async def stage_crawl(self) -> None:
         self.emit({"type": "step", "name": "crawl", "status": "running"})
         result = await sources.run_source(self.options.source, self.options.filters,
@@ -144,7 +155,7 @@ class Pipeline:
         而且某个平台被限流时整段卡住。改成队列后耗时接近
         ``总任务数 / 并发数``，单个任务失败也不再影响其他任务。
         """
-        companies = self.store.company_targets(limit=self.options.limit)
+        companies = self._companies()
         targets: list[tuple[str, str, str]] = []
         for company in companies:
             name = str(company.get("company_name") or company.get("company_key") or "")
@@ -192,13 +203,27 @@ class Pipeline:
             key = payload.get("key") or ""
             if key:
                 touched.add(key)
-            if payload.get("findings"):
+            findings = payload.get("findings") or []
+            if findings:
                 evidence_total += self.store.save_evidence(
-                    key, payload["agent"], payload["findings"], run_id=run_id)
+                    key, payload["agent"], findings, run_id=run_id)
+            elif payload.get("status") == "empty" and key:
+                # 本次明确查无结果（包括被 agent 判定为全部无关）：
+                # 清掉旧证据，避免历史噪声继续参与打分。
+                self.store.clear_evidence(key, payload["agent"])
             if payload.get("status") in ("blocked", "failed", "empty"):
                 self.emit({"type": "error", "agent": payload["agent"],
                            "message": payload.get("error")
                            or "；".join(list(payload.get("notes") or [])[:1])})
+
+            summary = payload.get("summary")
+            if key and summary:
+                self.store.save_agent_summary(
+                    key, payload["agent"], summary, run_id=run_id,
+                    evidence_count=len(findings))
+            elif key and payload.get("status") in ("ok", "partial", "empty"):
+                # 本次没产出摘要时清掉旧摘要，避免摘要和本次证据对不上
+                self.store.clear_agent_summary(key, payload["agent"])
 
         self.summary["companies"] = len(touched)
         self.summary["evidence"] = evidence_total
@@ -212,17 +237,25 @@ class Pipeline:
         """构造一个背调任务。异常交给队列判定是否重试。"""
 
         async def run_task() -> dict:
+            # 登录态是按平台分目录存的（.state/login/zhihu 等），
+            # 每个背调任务必须读自己平台的 profile，否则登录了也用不上。
+            platform_ctx = replace(
+                self.ctx,
+                options={**self.ctx.options,
+                         "state": str(Path(self.options.state_root) / platform)},
+            )
             result = await self._run_agent(agent_name, AgentRequest(
-                company_name=name, company_key=key))
+                company_name=name, company_key=key), ctx=platform_ctx)
             counter["n"] += 1
             self.emit({"type": "progress", "name": f"backduty:{platform}",
                        "current": counter["n"], "total": total, "message": name})
             if result is None:
                 return {"key": key, "agent": agent_name, "findings": [],
-                        "status": "skipped", "error": None, "notes": []}
+                        "status": "skipped", "error": None, "notes": [], "summary": None}
             return {"key": key, "agent": agent_name, "findings": list(result.findings),
                     "status": result.status.value, "error": result.error,
-                    "notes": list(result.notes)}
+                    "notes": list(result.notes),
+                    "summary": (result.meta or {}).get("summary")}
 
         return run_task
 
@@ -238,7 +271,7 @@ class Pipeline:
                        "message": "任务超时"})
 
     async def stage_company_score(self, run_id: int) -> None:
-        companies = self.store.company_targets(limit=self.options.limit)
+        companies = self._companies()
         scored = 0
         for company in companies:
             name = str(company.get("company_name") or "")
@@ -340,7 +373,8 @@ class Pipeline:
             },
         )
 
-    async def _run_agent(self, name: str, request: AgentRequest):
+    async def _run_agent(self, name: str, request: AgentRequest, *,
+                         ctx: AgentContext | None = None):
         # 配置里被停用的 agent 直接跳过（config/agents.json）
         try:
             from ..agents import settings as agent_settings
@@ -356,14 +390,14 @@ class Pipeline:
             self._warn(name, f"agent {name} 不存在，已跳过")
             return None
         try:
-            ctx = self.ctx
+            base_ctx = ctx or self.ctx
             try:
                 from ..agents import settings as agent_settings
 
-                ctx = agent_settings.scope_context(self.ctx, name)
+                scoped = agent_settings.scope_context(base_ctx, name)
             except Exception:  # noqa: BLE001
-                ctx = self.ctx
-            return await agent.execute(request, ctx)
+                scoped = base_ctx
+            return await agent.execute(request, scoped)
         except Exception as exc:  # noqa: BLE001 - 单个 agent 崩了不该中断整条流水线
             self.emit({"type": "error", "agent": name,
                        "message": f"{type(exc).__name__}: {exc}"})

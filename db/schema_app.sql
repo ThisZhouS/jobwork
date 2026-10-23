@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS public.backduty_raw (
     PRIMARY KEY (company_key, agent)
 );
 
+-- AI agent 对证据的结构化摘要（每个公司每个 agent 保留最新一份）
+CREATE TABLE IF NOT EXISTS public.backduty_summary (
+    company_key   text NOT NULL,
+    agent         text NOT NULL,
+    run_id        bigint REFERENCES public.app_run(id) ON DELETE SET NULL,
+    summary       jsonb NOT NULL,           -- {summary, points[{topic,text,evidence}], risk_level}
+    evidence_count integer,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (company_key, agent)
+);
+
 -- 公司打分（每次一份，保留历史便于对比）
 CREATE TABLE IF NOT EXISTS public.company_score (
     id            bigserial PRIMARY KEY,

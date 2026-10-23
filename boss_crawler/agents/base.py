@@ -367,4 +367,5 @@ class Agent(ABC):
             "description": self.description,
             "requires": list(self.requires),
             "produces": list(self.produces),
+            "requires_models": list(self.requires_models),
         }

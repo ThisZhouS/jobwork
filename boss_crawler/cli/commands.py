@@ -925,7 +925,8 @@ def _build_agent_context(args):
         logger=Logger("info"),
         http=http,
         browser=browser,
-        options={"dump_dir": getattr(args, "dump_dir", None), "cwd": str(Path.cwd())},
+        options={"dump_dir": getattr(args, "dump_dir", None), "cwd": str(Path.cwd()),
+                 "no_browser": bool(getattr(args, "no_browser", False))},
     )
 
 

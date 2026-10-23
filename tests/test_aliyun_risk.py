@@ -30,6 +30,18 @@ def cfg(tmp_path, monkeypatch):
                            "court": "court", "date": "judgeTime"},
                 "budget": 2,
             },
+            "business": {
+                "enabled": True,
+                "method": "POST",
+                "base": "https://demo.market.alicloudapi.com",
+                "path": "/api/company_search/query",
+                "body": {"keyword": "{company}", "pageNum": "1", "pageSize": "10"},
+                "items_path": "data.companyList",
+                "fields": {"title": "companyName", "status": "companyStatus"},
+                "profile_fields": {"name": "companyName", "reg_status": "companyStatus",
+                                   "credit_code": "creditNo"},
+                "budget": 2,
+            },
             "off": {"enabled": False, "base": "https://x/api", "path": "/p"},
             "nofill": {"enabled": True, "base": "", "path": ""},
         }
@@ -44,10 +56,22 @@ class FakeHttp:
         self.error = error
         self.urls: list[str] = []
         self.headers: list[dict] = []
+        self.methods: list[str] = []
+        self.bodies: list[dict] = []
 
     async def get(self, url, **kwargs):
         self.urls.append(url)
         self.headers.append(kwargs.get("headers") or {})
+        self.methods.append("GET")
+        if self.error is not None:
+            raise self.error
+        return json.dumps(self.payload, ensure_ascii=False)
+
+    async def post(self, url, **kwargs):
+        self.urls.append(url)
+        self.headers.append(kwargs.get("headers") or {})
+        self.methods.append("POST")
+        self.bodies.append(kwargs.get("data") or {})
         if self.error is not None:
             raise self.error
         return json.dumps(self.payload, ensure_ascii=False)
@@ -67,7 +91,7 @@ def tool():
 # ---------------------------------------------------------------- 配置层
 def test_load_and_build_url(cfg):
     profiles = market.load()
-    assert set(profiles) == {"judicial", "off", "nofill"}
+    assert set(profiles) == {"judicial", "business", "off", "nofill"}
     url = market.build_url(profiles["judicial"], "成都某某公司")
     assert url.startswith("https://demo.market.alicloudapi.com/enterprise/risk?")
     assert "%E6%88%90%E9%83%BD" in url      # 已 urlencode
@@ -131,6 +155,45 @@ async def test_tool_calls_with_appcode_header(cfg, monkeypatch):
     assert "keyword=" in http.urls[0]
 
 
+def test_build_body_replaces_company(cfg):
+    profile = market.load()["business"]
+    body = market.build_body(profile, "成都某某公司")
+    assert body == {"keyword": "成都某某公司", "pageNum": "1", "pageSize": "10"}
+
+
+async def test_tool_posts_form_body_and_maps_profile(cfg, monkeypatch):
+    monkeypatch.setenv("ALIYUN_APPCODE", "code-abc")
+    http = FakeHttp({"data": {"companyList": [
+        {"companyName": "成都某某公司", "companyStatus": "存续",
+         "creditNo": "91510100MA00000000"},
+        {"companyName": "无关公司", "companyStatus": "在营"},
+    ]}})
+    result = await tool().call(toolbox(http), company="成都某某公司", profile="business")
+
+    assert result.status is AgentStatus.OK
+    assert http.methods == ["POST"]
+    assert http.bodies[0]["keyword"] == "成都某某公司"
+    assert http.headers[0]["Content-Type"].startswith(
+        "application/x-www-form-urlencoded")
+    # 模糊搜索返回多家时只保留最匹配的一家
+    assert len(result.data) == 1
+    assert result.data[0]["title"] == "成都某某公司"
+    assert result.data[0]["profile"]["reg_status"] == "存续"
+    assert result.data[0]["profile"]["credit_code"] == "91510100MA00000000"
+
+
+def test_best_match_prefers_exact_and_shorter(cfg):
+    profile = market.load()["business"]
+    rows = market.normalize({"data": {"companyList": [
+        {"companyName": "深圳市本手信息技术有限公司", "companyStatus": "在营"},
+        {"companyName": "本手信息", "companyStatus": "存续"},
+        {"companyName": "其它公司", "companyStatus": "注销"},
+    ]}}, profile)
+    best = market.best_match(rows, "本手信息")
+    assert best is not None
+    assert best["title"] == "本手信息"
+
+
 async def test_tool_blocked_without_appcode(cfg, monkeypatch):
     monkeypatch.delenv("ALIYUN_APPCODE", raising=False)
     monkeypatch.setattr(market, "STATE_FILE", cfg.parent / "none.txt")
@@ -178,6 +241,14 @@ async def test_tool_network_error_degrades(cfg, monkeypatch):
     result = await tool().call(toolbox(FakeHttp(error=RuntimeError("超时"))), company="某公司")
     assert result.status is AgentStatus.FAILED
     assert "超时" in (result.error or "")
+
+
+async def test_tool_auth_error_is_blocked(cfg, monkeypatch):
+    monkeypatch.setenv("ALIYUN_APPCODE", "not-an-appcode")
+    result = await tool().call(
+        toolbox(FakeHttp(error=RuntimeError("401 Unauthorized"))), company="某公司")
+    assert result.status is AgentStatus.BLOCKED
+    assert "AppCode" in (result.error or "")
 
 
 async def test_tool_empty_rows_explains_not_safe(cfg, monkeypatch):

@@ -85,6 +85,13 @@ class ToolAgent(Agent):
     mandatory_tools: tuple[str, ...] = ("log_event",)
     log_tool = "log_event"
 
+    def describe(self) -> dict[str, Any]:
+        """把"这个模块会开哪些工具"也暴露出去，前端才能画出依赖。"""
+        info = super().describe()
+        info["tools"] = [call.tool for call in self.tools]
+        info["mandatory_tools"] = list(self.mandatory_tools)
+        return info
+
     async def run(self, request: AgentRequest, ctx: AgentContext) -> AgentResult:
         started = time.perf_counter()
         results: list[ToolResult] = []

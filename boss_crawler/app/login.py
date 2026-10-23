@@ -88,17 +88,35 @@ async def login(platform: str, *, state_root: str | Path = ".state/login",
 
     session = None
     try:
-        from scrapling.fetchers import StealthySession
+        try:
+            from scrapling.fetchers import AsyncStealthySession as SessionClass
+        except Exception:  # noqa: BLE001 - 老版本只有同步实现
+            from scrapling.fetchers import StealthySession as SessionClass
 
-        from ..agents.fetch import stealth_source
+        from ..crawl.browser import stealth_source
 
-        session = StealthySession(
+        session = SessionClass(
             headless=False,
             user_data_dir=str(directory),
             source=stealth_source(),
         )
         await _maybe_await(session.start())
-        await _maybe_await(session.fetch(cfg.url, network_idle=False))
+
+        # 不能用 session.fetch()：它在返回后会关闭页面，持久化 context 里
+        # 只有这一个标签页时，整个浏览器窗口会跟着消失。登录必须自己建页并保持打开。
+        context = getattr(session, "context", None)
+        if context is None:
+            raise RuntimeError("浏览器上下文未就绪")
+        page = await _maybe_await(context.new_page())
+        try:
+            await _maybe_await(page.goto(
+                cfg.url, referer="https://www.google.com/",
+                wait_until="domcontentloaded", timeout=45_000))
+        except Exception as exc:  # noqa: BLE001 - 页面慢不该导致窗口直接关掉
+            if emit:
+                emit({"type": "login", "platform": platform, "status": "waiting",
+                      "message": f"{cfg.label} 页面加载较慢（{type(exc).__name__}），"
+                                 "窗口已打开，可手动继续登录"})
         if emit:
             emit({"type": "login", "platform": platform, "status": "waiting",
                   "message": f"等待 {cfg.label} 登录完成（最多 {int(timeout)} 秒）"})
@@ -114,8 +132,11 @@ async def login(platform: str, *, state_root: str | Path = ".state/login",
         return {"platform": platform, "ok": False, "state": str(directory),
                 "reason": f"等待 {int(timeout)} 秒仍未检测到登录态（可在登录页手动登录后重试）"}
     except Exception as exc:  # noqa: BLE001 - 登录失败要能说清原因
-        return {"platform": platform, "ok": False,
-                "reason": f"{type(exc).__name__}: {exc}"}
+        message = f"{type(exc).__name__}: {exc}"
+        if emit:
+            emit({"type": "login", "platform": platform, "status": "failed",
+                  "message": message})
+        return {"platform": platform, "ok": False, "reason": message}
     finally:
         if session is not None:
             try:

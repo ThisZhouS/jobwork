@@ -48,8 +48,17 @@ from boss_crawler.agents.tools.sites.tianyancha import (
     parse_counts,
     parse_risk_rows,
 )
-from boss_crawler.agents.tools.sites.tieba import parse_tieba_bar, parse_tieba_search
+from boss_crawler.agents.tools.sites.tieba import (
+    parse_tieba_bar,
+    parse_tieba_rendered,
+    parse_tieba_search,
+)
 from boss_crawler.agents.tools.sites.weibo import parse_weibo_html, parse_weibo_json
+from boss_crawler.agents.backduty.relevance import (
+    filter_findings,
+    normalize_summary,
+    parse_indices,
+)
 from boss_crawler.agents.tools.sites.zhihu import (
     object_url,
     parse_search_html,
@@ -261,6 +270,34 @@ def test_zhihu_timestamp_to_date():
     assert timestamp_to_date("abc") is None
 
 
+def test_relevance_parse_indices():
+    assert parse_indices("[1, 3]", 4) == [1, 3]
+    assert parse_indices("结果：[]", 4) == []
+    assert parse_indices("[1, 9]", 4) == [1]
+    assert parse_indices("没有数组", 4) is None
+
+
+async def test_relevance_without_model_keeps_all():
+    from boss_crawler.agents.base import Finding
+
+    items = [Finding(source="zhihu", title="a"), Finding(source="zhihu", title="b")]
+    kept, info = await filter_findings(items, "某公司", AgentContext())
+    assert kept == items
+    assert info["judged"] is False
+    assert "模型不可用" in info["reason"]
+
+
+def test_summary_unwraps_double_encoded_json():
+    inner = {"summary": "一句话结论", "points": [{"topic": "薪资"}],
+             "risk_level": "low"}
+    outer = json.dumps({"summary": json.dumps(inner, ensure_ascii=False),
+                        "points": []}, ensure_ascii=False)
+    parsed = normalize_summary(outer)
+    assert parsed is not None
+    assert parsed["summary"] == "一句话结论"
+    assert parsed["risk_level"] == "low"
+
+
 def test_zhihu_parse_html_uses_question_anchor():
     rows = parse_search_html('<a href="/question/456">茶百道值得去吗</a>' + "补充" * 40, "茶百道")
     assert rows and rows[0]["url"].startswith("https://www.zhihu.com/question/456")
@@ -268,7 +305,7 @@ def test_zhihu_parse_html_uses_question_anchor():
 
 async def test_zhihu_tool_ok():
     payload = json.dumps({"data": [{"object": {"type": "answer", "id": 1,
-                                                "question": {"id": 2}, "content": "欠薪三个月"}}]})
+                                                "question": {"id": 2}, "content": "茶百道欠薪三个月"}}]})
     result = await get_tool("zhihu_search").execute(_box({"zhihu.com": payload}), company="茶百道")
     assert result.status is AgentStatus.OK
     assert result.data
@@ -291,6 +328,20 @@ def test_tieba_search_parses_blocks():
 def test_tieba_bar_parses_post_links():
     rows = parse_tieba_bar('<a href="/p/222">茶百道加盟避雷</a>' + "楼层" * 30, "茶百道")
     assert rows and rows[0]["url"].endswith("/p/222")
+
+
+def test_tieba_rendered_pairs_cards_with_absolute_links():
+    html = (
+        '<div class="thread-item"><span class="thread-title">茶百道加盟避雷</span>'
+        '<span class="post-num">12</span></div>'
+        '<div class="thread-item"><span class="thread-title">茶百道工资拖欠</span></div>'
+        '<a href="https://tieba.baidu.com/p/111?fr=frs">x</a>'
+        '<a href="https://tieba.baidu.com/p/222?fr=frs">x</a>'
+    )
+    rows = parse_tieba_rendered(html, "茶百道")
+    assert len(rows) == 2
+    assert rows[0]["url"].endswith("/p/111")
+    assert "加盟避雷" in rows[0]["title"]
 
 
 def test_tieba_ignores_short_anchor():
@@ -477,7 +528,7 @@ def test_describe_data_includes_counts():
 
 async def test_zhihu_agent_summarizes_tool_rows():
     payload = json.dumps({"data": [{"object": {"type": "answer", "id": 1,
-                                                "question": {"id": 2}, "content": "欠薪三个月"}}]})
+                                                "question": {"id": 2}, "content": "茶百道欠薪三个月"}}]})
     agent = get_agent("zhihu")()
     result = await agent.execute(AgentRequest(company_name="茶百道"),
                                  AgentContext(http=FakeHttp({"zhihu.com": payload}),
@@ -496,8 +547,8 @@ async def test_agent_requires_company():
 
 async def test_agent_dedupes_findings():
     payload = json.dumps({"data": [
-        {"object": {"type": "answer", "id": 1, "question": {"id": 2}, "content": "欠薪"}},
-        {"object": {"type": "answer", "id": 1, "question": {"id": 2}, "content": "欠薪"}},
+        {"object": {"type": "answer", "id": 1, "question": {"id": 2}, "content": "茶百道欠薪"}},
+        {"object": {"type": "answer", "id": 1, "question": {"id": 2}, "content": "茶百道欠薪"}},
     ]})
     result = await get_agent("zhihu")().execute(
         AgentRequest(company_name="茶百道"),

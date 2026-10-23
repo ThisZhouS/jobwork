@@ -95,20 +95,33 @@ class ModelSpec:
         return self.api_key_env
 
     def api_key(self) -> str | None:
-        """读密钥。不读日志、不缓存、不打印。"""
-        from ... import config
+        """读密钥。不读日志、不缓存、不打印。
 
+        环境变量优先，其次按供应商读取 ``.state/`` 下对应的密钥文件。
+        不做「任何规格都回退到 Ark 密钥」——那会把 A 供应商的密钥发给 B 供应商。
+        """
         value = os.environ.get(self.api_key_env)
         if value:
             return value.strip()
+        path = self.key_file()
         try:
-            path = getattr(config, "ARK_KEY_FILE", None)
             if path and Path(path).exists():
                 text = Path(path).read_text(encoding="utf-8").strip()
                 return text or None
         except Exception:  # noqa: BLE001
             return None
         return None
+
+    def key_file(self):
+        """该规格的本地密钥文件；没有约定就返回 ``None``。"""
+        from ... import config
+
+        mapping = {
+            "ARK_API_KEY": getattr(config, "ARK_KEY_FILE", None),
+            "DEEPSEEK_API_KEY": getattr(config, "DEEPSEEK_KEY_FILE", None),
+        }
+        value = mapping.get(self.api_key_env)
+        return Path(value) if value else None
 
     def describe(self) -> dict:
         """对外描述：**绝不含密钥**。"""
@@ -208,6 +221,10 @@ def _load_builtin() -> None:
     except Exception as exc:  # noqa: BLE001 - 单文件坏了不该拖累整体
         _LOAD_ERRORS["boss_crawler.agents.models.ark"] = f"{type(exc).__name__}: {exc}"
     try:
+        from . import deepseek  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        _LOAD_ERRORS["boss_crawler.agents.models.deepseek"] = f"{type(exc).__name__}: {exc}"
+    try:
         apply_overrides()
     except Exception as exc:  # noqa: BLE001
         _LOAD_ERRORS["config/models.json"] = f"{type(exc).__name__}: {exc}"
@@ -215,7 +232,9 @@ def _load_builtin() -> None:
 
 # ---------------------------------------------------------------- 声明式覆盖
 def overrides_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "config" / "models.json"
+    from ... import config
+
+    return config.CONFIG_DIR / "models.json"
 
 
 def apply_overrides(path: Path | None = None) -> dict:
@@ -474,10 +493,12 @@ class ModelBox:
 
 def _client_for(spec: ModelSpec):
     """按 provider 找实现。没实现的 provider 明确报错，不静默。"""
-    from . import ark
+    from . import ark, deepseek
 
     if spec.provider == "ark":
         return ark.ArkClient(spec)
+    if spec.provider == "deepseek":
+        return deepseek.DeepSeekClient(spec)
     raise ModelUnavailable(f"未实现的模型供应商：{spec.provider}", code="no_provider")
 
 

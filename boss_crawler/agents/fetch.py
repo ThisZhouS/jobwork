@@ -208,14 +208,14 @@ class StealthBrowser:
         from ..crawl.browser import stealth_source
 
         try:
-            from scrapling.fetchers import StealthySession
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"scrapling 不可用：{exc}") from exc
+            from scrapling.fetchers import AsyncStealthySession as SessionClass
+        except Exception:  # noqa: BLE001 - 老版本只有同步实现
+            from scrapling.fetchers import StealthySession as SessionClass
 
         kwargs: dict[str, Any] = {"headless": self.headless, "source": stealth_source()}
         if self.state_file:
             kwargs["user_data_dir"] = self.state_file
-        self._session = StealthySession(**kwargs)
+        self._session = SessionClass(**kwargs)
         started = self._session.start()
         if asyncio.iscoroutine(started):
             await started

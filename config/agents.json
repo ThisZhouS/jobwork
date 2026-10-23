@@ -15,5 +15,11 @@
       }
     }
   },
-  "agents": {}
+  "agents": {
+    "resume_tailor": {
+      "model": {
+        "chat": "chat.deepseek"
+      }
+    }
+  }
 }

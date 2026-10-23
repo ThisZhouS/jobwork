@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..base import AgentRequest
 from ..registry import register
-from ..toolagent import ToolAgent, ToolCall, sentiment_summary
+from ..toolagent import ToolCall, sentiment_summary
+from .relevance import AiSocialAgent
 
 
-class WeiboAgent(ToolAgent):
+class WeiboAgent(AiSocialAgent):
     name = "weibo"
     site = "微博"
     description = "调 weibo_search 工具，汇总微博上关于该公司的评价与负面事件"
