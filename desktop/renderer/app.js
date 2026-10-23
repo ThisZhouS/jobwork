@@ -28,7 +28,14 @@ const laborMini = (flag, reason) => {
 };
 const pct = (v) => (v === null || v === undefined) ? "—" : Math.round(Number(v)) + "%";
 
-const state = { data: null, filters: null, cloudKind: "all", cfgTab: "agents" };
+const state = {
+  data: null,
+  filters: null,
+  cloudKind: "all",
+  cfgAgent: "",
+  status: null,
+  models: null,
+};
 
 async function call(action, args) {
   const res = await window.api.call(action, args || {});
@@ -39,6 +46,84 @@ async function call(action, args) {
   return res.data;
 }
 
+// ---------------------------------------------------------------- HUD / 外壳
+const intText = (v) => (v === null || v === undefined || Number.isNaN(Number(v)))
+  ? "—" : Number(v).toLocaleString("en-US");
+
+function specOf(name) {
+  return ((state.models && state.models.models) || []).find((m) => m.name === name) || null;
+}
+
+function defaultSpecName(kind) {
+  const list = ((state.models && state.models.models) || [])
+    .filter((m) => m.kind === kind && m.enabled);
+  const usable = list.find((m) => m.has_key);
+  return (usable || list[0] || {}).name || "";
+}
+
+function renderHud() {
+  const status = state.status || {};
+  const db = status.db || {};
+  const agents = status.agents || [];
+  const models = (state.models && state.models.models) || [];
+  const usable = models.filter((m) => m.enabled && m.has_key);
+  const enabled = agents.filter((a) => a.enabled !== false).length;
+  const set = (id, text, cls) => {
+    const node = $(id);
+    if (!node) return;
+    node.textContent = text;
+    if (cls !== undefined) node.className = cls;
+  };
+  set("#hud-db", status.db ? (db.ok ? "ONLINE" : "OFFLINE") : "—",
+      status.db ? (db.ok ? "ok" : "bad") : "");
+  set("#hud-jobs", intText(db.jobs));
+  set("#hud-companies", intText(db.companies));
+  set("#hud-modules", agents.length ? `${enabled}/${agents.length}` : "—");
+  set("#hud-models", models.length ? `${usable.length}/${models.length}` : "—");
+  const foot = $("#foot-modules");
+  if (foot) foot.textContent = agents.length ? `${enabled} MODULES ACTIVE` : "NO MODULE DATA";
+}
+
+function renderTopbar() {
+  const status = state.status || {};
+  const db = status.db || {};
+  const login = status.login || {};
+  const models = (state.models && state.models.models) || [];
+  const chat = models.find((m) => m.kind === "chat");
+  const chatReady = chat && chat.enabled && chat.has_key;
+  const box = $("#topbar-right");
+  if (!box) return;
+  box.innerHTML = `
+    <span class="pill ${db.ok ? "pill-ok" : "pill-bad"}">${icon("database")}${db.ok ? "DB ONLINE" : "DB OFFLINE"}</span>
+    <span class="pill">${icon("check")}登录 ${Object.keys(login).length}</span>
+    <span class="pill ${chatReady ? "pill-cyan" : "pill-dim"}">${icon("layers")}CHAT ${chat ? esc(chat.name) : "未配置"}</span>
+    <button class="btn btn-ghost btn-xs" id="btn-shell-refresh" title="重新读取数据库与配置">${icon("refresh")}刷新</button>`;
+  $("#btn-shell-refresh").addEventListener("click", () => refreshShell(true));
+}
+
+async function refreshShell(withData) {
+  const [status, models, data] = await Promise.all([
+    call("status"),
+    call("models"),
+    withData ? call("data") : Promise.resolve(state.data),
+  ]);
+  if (status) state.status = status;
+  if (models) state.models = models;
+  if (withData && data) state.data = data;
+  renderHud();
+  renderTopbar();
+  await router();
+}
+
+function tickClock() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const node = $("#hud-clock");
+  if (node) node.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+tickClock();
+setInterval(tickClock, 1000);
+
 // ---------------------------------------------------------------- 路由
 const ROUTES = {
   "/": ["概览", pageOverview],
@@ -46,6 +131,7 @@ const ROUTES = {
   "/companies": ["公司", pageCompanies],
   "/skills": ["技能词云", pageSkills],
   "/resume": ["简历", pageResume],
+  "/modules": ["模块", pageModules],
   "/settings": ["设置", pageSettings],
 };
 
@@ -66,8 +152,9 @@ function crumb(...parts) {
 }
 
 async function router() {
+  if (window.SwarmMap) window.SwarmMap.stop();
   const { path, params } = parseHash();
-  $$("#nav a, .foot-link").forEach((a) => {
+  $$("#nav a").forEach((a) => {
     const route = a.dataset.route;
     a.classList.toggle("active", route === path || (route !== "/" && path.startsWith(route)));
   });
@@ -82,7 +169,7 @@ async function router() {
       await pageJobDetail(decodeURIComponent(m[1]));
     } else {
       const entry = ROUTES[path] || ROUTES["/"];
-      crumb("求职背调", entry[0]);
+      crumb("SWARM", entry[0]);
       await entry[1](params);
     }
   } catch (exc) {
@@ -102,7 +189,8 @@ $("#chat-close").addEventListener("click", () => { drawer().hidden = true; });
 
 const nowTime = () => {
   const d = new Date();
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
 function chatLog(kind, who, text) {
@@ -191,8 +279,13 @@ async function streamRun(args, onDone) {
 }
 
 // ---------------------------------------------------------------- 组件
-const kpi = (value, label) =>
-  `<div class="card kpi"><div class="kpi-num">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`;
+const kpi = (value, label, note = "", accent = "pink", index = "") =>
+  `<div class="card kpi" style="--tab:var(--${accent})">
+    <div class="kpi-head"><span>${esc(label)}</span><em>${esc(index || "—")}</em></div>
+    <div class="kpi-num">${esc(value)}</div>
+    <div class="kpi-note">${esc(note)}</div>
+    <div class="kpi-rule"><i></i></div>
+  </div>`;
 
 const cardTitle = (text, iconName, info) =>
   `<div class="card-title">${iconName ? icon(iconName, "ni ti") : ""}${esc(text)}${info ? icon("info", "ni info") : ""}</div>`;
@@ -248,26 +341,26 @@ function radarSVG(dimensions, size = 340) {
   };
   const rings = [0.2, 0.4, 0.6, 0.8, 1].map((f) => {
     const pts = dimensions.map((_, i) => pt(i, R * f).join(",")).join(" ");
-    return `<polygon points="${pts}" fill="none" stroke="rgba(148,163,184,.18)" stroke-width="1"/>`;
+    return `<polygon points="${pts}" fill="none" stroke="#2a2a37" stroke-width="1"/>`;
   }).join("");
   const axes = dimensions.map((_, i) => {
     const [x, y] = pt(i, R);
-    return `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="rgba(148,163,184,.18)"/>`;
+    return `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#2a2a37"/>`;
   }).join("");
   const labels = dimensions.map((dim, i) => {
     const [x, y] = pt(i, R + 30);
     const anchor = Math.abs(x - cx) < 6 ? "middle" : (x > cx ? "start" : "end");
-    return `<text x="${x}" y="${y - 4}" text-anchor="${anchor}" fill="#94A3B8" font-size="12">${esc(dim.name)}</text>
-            <text x="${x}" y="${y + 12}" text-anchor="${anchor}" fill="#22D3EE" font-size="12.5" font-weight="600">${pct(dim.score)}</text>`;
+    return `<text x="${x}" y="${y - 4}" text-anchor="${anchor}" fill="#8a8a9e" font-size="11" font-family="Cascadia Mono, Consolas, monospace">${esc(dim.name)}</text>
+            <text x="${x}" y="${y + 12}" text-anchor="${anchor}" fill="#5cb8f0" font-size="11.5" font-family="Cascadia Mono, Consolas, monospace">${pct(dim.score)}</text>`;
   }).join("");
   const shape = dimensions
     .map((dim, i) => pt(i, R * Math.max(0, Math.min(100, dim.score)) / 100).join(",")).join(" ");
   const dots = dimensions
     .map((dim, i) => pt(i, R * Math.max(0, Math.min(100, dim.score)) / 100))
-    .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3.5" fill="#22D3EE"/>`).join("");
+    .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="#5cb8f0"/>`).join("");
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img">
     ${rings}${axes}
-    <polygon points="${shape}" fill="rgba(34,211,238,.14)" stroke="#22D3EE" stroke-width="2.2"/>
+    <polygon points="${shape}" fill="rgba(92,184,240,.13)" stroke="#5cb8f0" stroke-width="2"/>
     ${dots}${labels}</svg>`;
 }
 
@@ -282,15 +375,15 @@ function lineSVG(points, width = 640, height = 200) {
     pad + ih - ((Number(p.value) - min) / span) * ih,
   ]);
   const path = coords.map((c, i) => `${i ? "L" : "M"}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(" ");
-  const dots = coords.map((c) => `<circle cx="${c[0]}" cy="${c[1]}" r="3" fill="#22D3EE"/>`).join("");
+  const dots = coords.map((c) => `<circle cx="${c[0]}" cy="${c[1]}" r="2.6" fill="#5cb8f0"/>`).join("");
   const first = String(points[0].at).slice(0, 10);
   const last = String(points[points.length - 1].at).slice(0, 10);
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="max-width:100%" role="img">
-    <path d="${path}" fill="none" stroke="#22D3EE" stroke-width="2"/>${dots}
-    <text x="${pad}" y="${height - 8}" fill="#64748B" font-size="11">${esc(first)}</text>
-    <text x="${width - pad}" y="${height - 8}" fill="#64748B" font-size="11" text-anchor="end">${esc(last)}</text>
-    <text x="${pad}" y="${pad - 10}" fill="#22D3EE" font-size="11">max ${fmt(max, 0)}</text>
-    <text x="${width - pad}" y="${pad - 10}" fill="#64748B" font-size="11" text-anchor="end">min ${fmt(min, 0)}</text>
+    <path d="${path}" fill="none" stroke="#5cb8f0" stroke-width="1.8"/>${dots}
+    <text x="${pad}" y="${height - 8}" fill="#525264" font-size="9" font-family="Cascadia Mono, Consolas, monospace">${esc(first)}</text>
+    <text x="${width - pad}" y="${height - 8}" fill="#525264" font-size="9" text-anchor="end" font-family="Cascadia Mono, Consolas, monospace">${esc(last)}</text>
+    <text x="${pad}" y="${pad - 10}" fill="#5fd3b0" font-size="9" font-family="Cascadia Mono, Consolas, monospace">max ${fmt(max, 0)}</text>
+    <text x="${width - pad}" y="${pad - 10}" fill="#525264" font-size="9" text-anchor="end" font-family="Cascadia Mono, Consolas, monospace">min ${fmt(min, 0)}</text>
   </svg>`;
 }
 
@@ -326,9 +419,145 @@ function bindNav() {
   });
 }
 
-// ---------------------------------------------------------------- 概览
+// ---------------------------------------------------------------- 模块视图
+const stageAccent = { source: "pink", backduty: "cyan", score: "teal", fit: "amber", tailor: "purple" };
+
+function agentsOf(kind) {
+  return ((state.status && state.status.agents) || []).filter((a) => a.kind === kind);
+}
+
+function agentByName(name) {
+  return ((state.status && state.status.agents) || []).find((a) => a.name === name) || null;
+}
+
+function pipelineStages() {
+  const status = state.status || {};
+  const sources = status.sources || [];
+  const backduty = agentsOf("backduty");
+  const pick = (name) => agentByName(name);
+  const single = (name) => {
+    const agent = pick(name);
+    return agent ? [agent] : [];
+  };
+  return [
+    {
+      id: "source", no: "01", name: "采集", en: "SOURCE",
+      modules: sources.map((s) => ({ ...s, source: true, enabled: s.implemented !== false })),
+      note: `${sources.filter((s) => s.implemented).length}/${sources.length} 已接入 · 适配器可扩展`,
+    },
+    {
+      id: "backduty", no: "02", name: "背调", en: "BACKDUTY", modules: backduty,
+      note: `${backduty.filter((a) => a.enabled !== false).length}/${backduty.length} 启用 · 多平台取证`,
+    },
+    {
+      id: "score", no: "03", name: "公司评分", en: "SCORE", modules: single("company_score"),
+      note: "五维规则评分 · 输出等级",
+    },
+    {
+      id: "fit", no: "04", name: "岗位适配", en: "FIT", modules: single("job_fit"),
+      note: "简历 × 岗位 · 输出适配度",
+    },
+    {
+      id: "tailor", no: "05", name: "简历定制", en: "TAILOR", modules: single("resume_tailor"),
+      note: "先问再改 · 产出简历版本",
+    },
+  ].map((stage) => ({ ...stage, accent: stageAccent[stage.id] }));
+}
+
+function moduleChip(mod, accent) {
+  const enabled = mod.enabled !== false;
+  const caps = mod.requires_models || [];
+  const title = [mod.label, mod.description].filter(Boolean).join(" · ") || mod.name;
+  if (mod.source) {
+    return `<span class="mod-chip ${enabled ? "" : "off"}" style="--tab:var(--${accent})" title="${esc(title)}">
+      <span class="dot"></span>${esc(mod.label || mod.name)}${enabled ? "" : " · 预留"}</span>`;
+  }
+  return `<a class="mod-chip ${enabled ? "" : "off"}" style="--tab:var(--${accent})"
+      href="#/settings?agent=${encodeURIComponent(mod.name)}" title="${esc(title)}">
+      <span class="dot"></span>${esc(mod.name)}${caps.length ? `<span class="cap">${esc(caps.join("+"))}</span>` : ""}</a>`;
+}
+
+function pipelineHTML() {
+  return `<div class="pipeline">${pipelineStages().map((stage) => `
+    <div class="stage" style="--tab:var(--${stage.accent})">
+      <div class="stage-head">
+        <span class="stage-no">${stage.no}</span>
+        <span class="stage-name">${esc(stage.name)}</span>
+        <span class="stage-en">${esc(stage.en)}</span>
+      </div>
+      <div class="stage-mods">${stage.modules.map((m) => moduleChip(m, stage.accent)).join("")
+        || `<span class="stage-note">未注册模块</span>`}</div>
+      <div class="stage-note">${esc(stage.note)}</div>
+    </div>`).join("")}</div>`;
+}
+
+function agentModelLabel(agent) {
+  const caps = agent.requires_models || [];
+  if (!caps.length) return "规则模块 · 不调用模型";
+  return caps.map((cap) => {
+    const name = (agent.model && agent.model[cap]) || defaultSpecName(cap);
+    return `${cap} → ${name || "无可用规格"}`;
+  }).join(" / ");
+}
+
+function agentModelAlert(agent) {
+  return (agent.requires_models || []).some((cap) => {
+    const name = (agent.model && agent.model[cap]) || defaultSpecName(cap);
+    const spec = specOf(name);
+    return !name || !spec || !spec.enabled || !spec.has_key;
+  });
+}
+
+function moduleCard(agent, index) {
+  const enabled = agent.enabled !== false;
+  const caps = agent.requires_models || [];
+  const tools = [...new Set([...(agent.tools || []), ...(agent.mandatory_tools || [])])];
+  const chosen = caps.map((cap) => ({
+    cap,
+    name: (agent.model && agent.model[cap]) || defaultSpecName(cap),
+  }));
+  const badModel = agentModelAlert(agent);
+  const modelText = caps.length
+    ? chosen.map((row) => `${row.cap} → ${row.name || "未配置"}`).join(" / ")
+    : "";
+  return `<article class="module-card ${enabled ? "" : "is-off"}" style="--tab:var(--${agent.kind === "backduty" ? "cyan" : "teal"})">
+    <div class="mod-top">
+      <span class="mod-no">${String(index).padStart(2, "0")}</span>
+      <div class="mod-title"><b>${esc(agent.name)}</b><em>${esc(agent.kind)} · v${esc(agent.version || "1.0")}</em></div>
+      <span class="mod-state ${enabled ? "" : "off"}">${enabled ? "ON" : "OFF"}</span>
+    </div>
+    <p class="mod-desc">${esc(agent.description || "未填写描述")}</p>
+    <div class="mod-meta">
+      <div class="mod-kv"><span>tools</span><b class="${tools.length ? "" : "none"}">${esc(tools.join(", ") || "无外部工具")}</b></div>
+      <div class="mod-kv"><span>models</span>${caps.length
+        ? `<b class="${badModel ? "warn" : ""}">${esc(modelText)}</b>`
+        : `<b class="none">规则模块 · 不调用模型</b>`}</div>
+      <div class="mod-kv"><span>produces</span><b>${esc((agent.produces || []).join(", ") || "—")}</b></div>
+      <div class="mod-kv"><span>requires</span><b>${esc((agent.requires || []).join(", ") || "—")}</b></div>
+    </div>
+    <div class="mod-actions">
+      <span class="pill ${Object.keys(agent.model || {}).length ? "pill-cyan" : "pill-dim"}">
+        ${Object.keys(agent.model || {}).length ? `覆盖 ${Object.keys(agent.model).length} 项` : "默认模型"}</span>
+      <a class="link" href="#/settings?agent=${encodeURIComponent(agent.name)}">配置 ${icon("chevron")}</a>
+    </div>
+  </article>`;
+}
+
+function fact(k, v) {
+  return `<div class="fact"><span class="fact-k">${esc(k)}</span><span class="fact-v">${esc(v)}</span></div>`;
+}
+
+
 async function pageOverview() {
+  if (window.SwarmMap) window.SwarmMap.stop();
   pageEl().innerHTML = `<div class="loading">加载中…</div>`;
+  if (!state.status) {
+    const [status, models] = await Promise.all([call("status"), call("models")]);
+    if (status) state.status = status;
+    if (models) state.models = models;
+    renderHud();
+    renderTopbar();
+  }
   const data = state.data || await call("data");
   if (!data) { pageEl().innerHTML = `<div class="empty">取数失败，看右下角对话</div>`; return; }
   state.data = data;
@@ -341,6 +570,26 @@ async function pageOverview() {
   const scored = sorted.filter((c) => c.score && c.score.total != null);
   const fitted = (data.jobs || []).filter((j) => j.fit).sort((a, b) => b.fit.total - a.fit.total);
   const negatives = sorted.reduce((sum, c) => sum + ((c.evidence || {}).negative || 0), 0);
+  const avg = scored.length
+    ? scored.reduce((sum, c) => sum + Number(c.score.total || 0), 0) / scored.length : null;
+  const agents = (state.status && state.status.agents) || [];
+  const activeModules = agents.filter((a) => a.enabled !== false).length;
+  const swarmStages = pipelineStages().map((stage) => {
+    const configurable = stage.modules.find((m) => !m.source);
+    return {
+      no: stage.no,
+      name: stage.name,
+      en: stage.en,
+      accent: stage.accent,
+      href: configurable
+        ? `#/settings?agent=${encodeURIComponent(configurable.name)}`
+        : "#/modules",
+      modules: stage.modules.map((m) => ({
+        name: m.label || m.name,
+        enabled: m.enabled !== false,
+      })),
+    };
+  });
 
   const rows = sorted.slice(0, 20).map((company) => {
     const s = company.score || {};
@@ -364,11 +613,44 @@ async function pageOverview() {
     || `<div class="empty">需要一份已确认简历<br><span class="chart-note">在「简历」页生成定向版本</span></div>`;
 
   pageEl().innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">总览</div>
+        <div class="page-sub">${scored.length} 家公司 · ${fitted.length} 个岗位已适配 · ${activeModules}/${agents.length} 个模块在线 · 数据仅存本机</div>
+      </div>
+      <div class="page-actions">
+        <a class="btn btn-ghost btn-sm" href="#/modules">${icon("layers")}模块面板</a>
+        <button class="btn btn-sm" id="btn-overview-refresh">${icon("refresh")}刷新</button>
+      </div>
+    </div>
+
     <div class="grid grid-4">
-      ${kpi(sorted.length, "公司")}
-      ${kpi((data.jobs || []).length, "岗位")}
-      ${kpi(scored.length, "已打分公司")}
-      ${kpi(negatives, "负面证据")}
+      ${kpi(intText(sorted.length), "公司实体", "已完成背调入库", "pink", "COMPANIES")}
+      ${kpi(intText((data.jobs || []).length), "岗位总量", "BOSS 直聘采集", "cyan", "JOBS")}
+      ${kpi(avg == null ? "—" : fmt(avg, 1), "平均公司分", `已评分 ${scored.length} 家`, "teal", "SCORE")}
+      ${kpi(intText(negatives), "负面证据", "来自背调 Finding", "amber", "RISK")}
+    </div>
+
+    <div class="card swarm-card">
+      <div class="card-head">
+        ${cardTitle("模块集群态势", "grid", true)}
+        <div class="swarm-head">
+          <span class="swarm-live"><i></i>LIVE</span>
+          <span class="card-sub">五阶段 · ${activeModules}/${agents.length} 模块在线 · 粒子密度 = 活跃度</span>
+        </div>
+      </div>
+      <div class="swarm-stage">
+        <canvas id="swarm-map" role="img"
+          aria-label="模块集群动画：采集、背调、评分、适配、定制五个阶段，粒子密度表示模块活跃度"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        ${cardTitle("模块流水线", "layers", true)}
+        <div class="card-sub">采集 → 背调 → 评分 → 适配 → 定制 · 点击模块直接配置</div>
+      </div>
+      ${pipelineHTML()}
     </div>
 
     <div class="grid grid-21 section">
@@ -394,12 +676,19 @@ async function pageOverview() {
           <div class="card-sub">${fitted.length} 个</div>
         </div>
         ${rail}
-        <div style="border-top:1px solid var(--line-soft);margin-top:6px;padding-top:12px">
-          <span class="link">共 ${scored.length} 家已打分 ${icon("chevron")}</span>
+        <div style="border-top:1px solid var(--line);margin-top:6px;padding-top:12px">
+          <a class="link" href="#/companies">共 ${scored.length} 家已打分 ${icon("chevron")}</a>
         </div>
       </div>
     </div>`;
   bindNav();
+  const swarmCanvas = $("#swarm-map");
+  if (swarmCanvas && window.SwarmMap) window.SwarmMap.mount(swarmCanvas, swarmStages);
+  const refresh = $("#btn-overview-refresh");
+  if (refresh) refresh.addEventListener("click", async () => {
+    state.data = null;
+    await pageOverview();
+  });
 }
 
 // ---------------------------------------------------------------- 公司列表
@@ -510,9 +799,10 @@ async function pageCompanyDetail(key, params) {
   const riskItems = Object.keys(detail.risk?.counts || {}).length
     ? Object.entries(detail.risk.counts).map(([name, count]) => `
         <div class="rank-row"><span class="rank-label" style="width:auto;flex:1">${esc(name)}</span>
-          <span class="rank-num" style="width:auto;color:var(--text)">${esc(count)}</span></div>`).join("")
+          <span class="rank-num" style="width:auto;color:var(--fg)">${esc(count)}</span></div>`).join("")
     : `<div class="empty">无风险计数</div>`;
 
+  const [scoreTone] = score.total != null ? toneOf(score.total) : ["tone-good"];
   pageEl().innerHTML = `
     <div class="detail-head">
       <div class="detail-logo">${esc((detail.name || "?").slice(0, 1))}</div>
@@ -524,7 +814,7 @@ async function pageCompanyDetail(key, params) {
         </div>
       </div>
       <div class="detail-score">
-        <span class="big">${score.total != null ? fmt(score.total, 1) : "—"}</span>
+        <span class="big ${score.total != null ? scoreTone : ""}">${score.total != null ? fmt(score.total, 1) : "—"}</span>
         <span class="of">/100</span>
       </div>
       ${score.grade ? `<div class="grade-box g-${esc(score.grade)}">${esc(score.grade)}</div>` : ""}
@@ -617,14 +907,24 @@ async function pageJobs() {
   const rows = jobs.map((job) => `
     <tr class="clickable" data-job="${esc(job.id)}">
       <td><span class="link">${esc(job.title)}</span></td>
-      <td style="color:var(--text-dim)">${esc(job.company || "—")}</td>
+      <td style="color:var(--dim)">${esc(job.company || "—")}</td>
       <td class="num">${esc(job.salary || "—")}</td>
-      <td style="color:var(--text-dim)">${esc(job.city || "—")}</td>
+      <td style="color:var(--dim)">${esc(job.city || "—")}</td>
       <td class="num">${job.fit ? fmt(job.fit.total) : "—"}</td>
       <td class="center">${job.fit ? gradeBadge(job.fit.grade, true) : "—"}</td>
     </tr>`).join("") || `<tr><td colspan="6" class="empty">暂无岗位</td></tr>`;
 
   pageEl().innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">岗位</div>
+        <div class="page-sub">${jobs.length} 条已入库 · BOSS直聘采集 · 背调与适配结果会写回岗位</div>
+      </div>
+      <div class="page-actions">
+        <span class="pill pill-cyan">${icon("database")}${jobs.length} JOBS</span>
+      </div>
+    </div>
+
     <div class="card">
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
         <div class="field" style="flex:2;min-width:200px">
@@ -884,7 +1184,8 @@ async function pageSkills(params) {
   const max = Math.max(...items.map((s) => s.count), 1);
   const min = Math.min(...items.map((s) => s.count), 1);
   const total = filtered.reduce((n, s) => n + s.count, 0);
-  const grand = all.reduce((n, s) => n + s.count, 0) || 1;
+  const mentions = all.reduce((n, s) => n + s.count, 0);
+  const grand = mentions || 1;
 
   // 先算好每个词的视觉参数，实际排布要等容器有了宽度再做（见 paintCloud）
   const prepared = items.map((item) => {
@@ -904,12 +1205,22 @@ async function pageSkills(params) {
             { labelWidth: 108 })).join("") || `<div class="empty">暂无</div>`;
 
   pageEl().innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">技能</div>
+        <div class="page-sub">${all.length} 个技能词 · 共 ${mentions} 次提及 · 从已入库岗位 JD 中提取</div>
+      </div>
+      <div class="page-actions">
+        <span class="pill pill-cyan">${icon("cloud")}${filtered.length} WORDS</span>
+      </div>
+    </div>
+
     <div class="grid grid-rail">
       <div class="card">
         <div class="card-head">${cardTitle("技能词云", "cloud", true)}
           <button class="chip" style="cursor:default">${icon("grid")}按频次</button></div>
         <div class="cloud" id="cloud-box"></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line-soft);padding-top:14px;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:14px;gap:12px;flex-wrap:wrap">
           <div class="chips">
             <button class="chip ${kind === "all" ? "active" : ""}" data-kind="all">${icon("layers")}全部 ${all.length}</button>
             <button class="chip ${kind === "tech" ? "active" : ""}" data-kind="tech">${icon("grid")}技术栈</button>
@@ -923,7 +1234,7 @@ async function pageSkills(params) {
         <div class="card-head">${cardTitle("TOP 10", "layers", true)}
           <div class="card-sub">${items.length} 个词</div></div>
         ${rail}
-        <div style="border-top:1px solid var(--line-soft);padding-top:12px;margin-top:6px">
+        <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:6px">
           <span class="card-sub">${icon("info")}百分比 = 该词岗位数 / 全部提及</span>
         </div>
       </div>
@@ -1035,7 +1346,7 @@ async function pageResume(params) {
         const fresh = await call("resume");
         const box = $("#tailor-result");
         if (fresh && fresh.ok && fresh.resume) {
-          box.innerHTML = `<div class="card" style="background:var(--bg-input)">
+          box.innerHTML = `<div class="card" style="background:var(--input)">
             <div class="card-head">${cardTitle("版本 #" + fresh.resume.id, "file")}
               <span class="pill ${fresh.resume.confirmed ? "pill-ok" : "pill-warn"}">${fresh.resume.confirmed ? "已确认" : "草稿"}</span></div>
             <pre style="font-size:12px;white-space:pre-wrap;max-height:320px;overflow-y:auto">${esc(JSON.stringify(fresh.resume.content, null, 2))}</pre>
@@ -1047,192 +1358,400 @@ async function pageResume(params) {
   });
 }
 
-// ---------------------------------------------------------------- 设置
-/* 配置中心的两个面板：agent 与 模型，写回各自的 json */
-function cfgPanel(tab, status, models) {
-  if (tab === "models") {
-    return (models?.models || []).map((m) => `
-      <div class="cfg-row">
-        <label class="cfg-name">
-          <input type="checkbox" data-model-enabled="${esc(m.name)}" ${m.enabled ? "checked" : ""}>
-          <span>${esc(m.name)}</span>
-        </label>
-        <span class="pill pill-dim">${esc(m.kind)}</span>
-        <input class="cfg-input" data-model-id="${esc(m.name)}" value="${esc(m.model_id || "")}"
-               title="供应商侧模型 id，改完回车生效">
-        <span class="pill ${m.has_key ? "pill-ok" : "pill-warn"}">${m.has_key ? "有密钥" : "缺密钥"}</span>
-      </div>`).join("") || `<div class="empty">无模型</div>`;
-  }
-  return (status.agents || []).map((a) => `
-    <div class="cfg-row">
-      <label class="cfg-name">
-        <input type="checkbox" data-agent-enabled="${esc(a.name)}" ${a.enabled === false ? "" : "checked"}>
-        <span>${esc(a.name)}</span>
-      </label>
-      ${(a.model && Object.keys(a.model).length)
-        ? `<span class="pill pill-cyan" title="按能力覆盖模型">${esc(Object.values(a.model).join(","))}</span>`
-        : ""}
-      <span class="pill pill-dim">${esc(a.kind)}</span>
-    </div>`).join("") || `<div class="empty">无 agent</div>`;
-}
-
-async function pageSettings() {
+// ---------------------------------------------------------------- 模块面板
+async function pageModules() {
   pageEl().innerHTML = `<div class="loading">加载中…</div>`;
-  const [status, models] = await Promise.all([call("status"), call("models")]);
-  const cfgTab = state.cfgTab || "agents";
-  if (!status) { pageEl().innerHTML = `<div class="empty">自检失败</div>`; return; }
+  if (!state.status || !state.models) {
+    const [status, models] = await Promise.all([call("status"), call("models")]);
+    if (status) state.status = status;
+    if (models) state.models = models;
+    renderHud();
+    renderTopbar();
+  }
+  const status = state.status;
+  if (!status) { pageEl().innerHTML = `<div class="empty">自检失败，无法读取模块清单</div>`; return; }
 
-  const db = status.db || {};
-  const login = status.login || {};
+  const agents = status.agents || [];
+  const backduty = agents.filter((a) => a.kind === "backduty");
+  const processing = agents.filter((a) => a.kind !== "backduty");
+  const withModels = agents.filter((a) => (a.requires_models || []).length);
+  const enabled = agents.filter((a) => a.enabled !== false).length;
+  const configured = agents.filter((a) => a.configured).length;
+  const tools = new Set();
+  agents.forEach((a) => {
+    (a.tools || []).forEach((t) => tools.add(t));
+    (a.mandatory_tools || []).forEach((t) => tools.add(t));
+  });
+  const sources = status.sources || [];
+  const implemented = sources.filter((s) => s.implemented);
+  const standalone = processing.filter((a) => a.name === "resume_score");
 
   pageEl().innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">模块</div>
+        <div class="page-sub">${agents.length} 个独立模块 · ${configured} 个有自定义配置 · 点击任意模块进入它的模型配置</div>
+      </div>
+      <div class="page-actions">
+        <a class="btn btn-ghost btn-sm" href="#/settings">${icon("cog")}配置中心</a>
+      </div>
+    </div>
+
+    <div class="grid grid-4">
+      ${kpi(intText(agents.length), "模块总数", `${backduty.length} 背调 / ${processing.length} 加工`, "orange", "MODULES")}
+      ${kpi(`${enabled}/${agents.length}`, "已启用", `${agents.length - enabled} 个停用后会被跳过`, "teal", "ACTIVE")}
+      ${kpi(intText(withModels.length), "调用模型", "按能力独立覆盖", "purple", "MODEL")}
+      ${kpi(intText(tools.size), "工具依赖", "HTTP / 浏览器 / CLI / 日志", "cyan", "TOOLS")}
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        ${cardTitle("模块流水线", "layers", true)}
+        <div class="card-sub">采集 → 背调 → 公司评分 → 岗位适配 → 简历定制</div>
+      </div>
+      ${pipelineHTML()}
+      <div class="chart-note left" style="margin-top:10px">
+        流水线按阶段串联；每个模块只声明自己的工具与模型能力，停用任意模块不会影响其他模块。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        ${cardTitle("背调模块", "building", true)}
+        <div class="card-sub">BACKDUTY · ${backduty.length} 个 · 独立取证</div>
+      </div>
+      <div class="module-grid">
+        ${backduty.map((a, i) => moduleCard(a, i + 1)).join("") || `<div class="empty">没有注册背调模块</div>`}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        ${cardTitle("加工模块", "cog", true)}
+        <div class="card-sub">SCORING / TAILORING · ${processing.length} 个</div>
+      </div>
+      <div class="module-grid">
+        ${processing.map((a, i) => moduleCard(a, backduty.length + i + 1)).join("") || `<div class="empty">没有注册加工模块</div>`}
+      </div>
+      ${standalone.length ? `<div class="chart-note left" style="margin-top:10px">
+        ${standalone.map((a) => esc(a.name)).join("、")} 是独立评估模块，不在主流水线上，可从「简历」页单独运行。
+      </div>` : ""}
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        ${cardTitle("数据源适配器", "database", true)}
+        <div class="card-sub">SOURCE · ${implemented.length}/${sources.length} 已接入</div>
+      </div>
+      <div class="grid grid-2">
+        ${sources.map((s) => `
+          <div class="rank-row">
+            <span class="dot" style="background:${s.implemented ? "var(--pink)" : "var(--faint)"}"></span>
+            <span class="rank-label" style="width:auto;flex:1">${esc(s.label)}
+              <span class="chart-note"> ${esc(s.name)}</span></span>
+            ${s.implemented ? `<span class="pill pill-ok">已接入</span>` : `<span class="pill pill-dim">预留插槽</span>`}
+          </div>`).join("") || `<div class="empty">没有数据源</div>`}
+      </div>
+      <div class="chart-note left" style="margin-top:10px">
+        预留插槽只需实现 build_steps 即可接入新平台；采集阶段与背调阶段彼此独立。
+      </div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------- 设置
+const CAP_LABELS = {
+  chat: ["对话能力", "CHAT"],
+  embedding: ["向量能力", "EMBEDDING"],
+  rerank: ["重排能力", "RERANK"],
+};
+
+function capLabel(kind) {
+  return (CAP_LABELS[kind] || [kind, String(kind).toUpperCase()])[0];
+}
+
+function settingsAgentList(agents, selected) {
+  const groups = [
+    ["背调 · BACKDUTY", agents.filter((a) => a.kind === "backduty")],
+    ["加工 · SCORING", agents.filter((a) => a.kind !== "backduty")],
+  ];
+  return groups.map(([label, list]) => `
+    <div class="cfg-group-label">${esc(label)} · ${list.length}</div>
+    ${list.map((a) => {
+      const caps = a.requires_models || [];
+      const alert = a.enabled !== false && agentModelAlert(a);
+      return `<button class="agent-row ${a.name === selected ? "active" : ""} ${a.enabled === false ? "off" : ""}"
+          data-agent-pick="${esc(a.name)}" title="${esc(a.description || a.name)}">
+        <span class="dot"></span>
+        <span class="agent-row-main">
+          <span class="agent-row-name">${esc(a.name)}</span>
+          <span class="agent-row-meta">${esc(caps.length ? agentModelLabel(a) : "规则模块")}${alert ? " · 模型不可用" : ""}</span>
+        </span>
+        <span class="agent-row-state">${a.enabled === false ? "OFF" : "ON"}</span>
+      </button>`;
+    }).join("")}`).join("");
+}
+
+function capRow(agent, kind) {
+  const specs = ((state.models && state.models.models) || []).filter((m) => m.kind === kind);
+  const enabledSpecs = specs.filter((m) => m.enabled);
+  const override = (agent.model || {})[kind] || "";
+  const def = defaultSpecName(kind);
+  const defSpec = specOf(def);
+  const shown = enabledSpecs.slice();
+  if (override) {
+    const current = specOf(override);
+    if (current && !shown.some((m) => m.name === override)) shown.push(current);
+  }
+  const options = shown.map((m) => {
+    const flags = [m.enabled ? "" : "已停用", m.has_key ? "" : "缺密钥"].filter(Boolean).join(" · ");
+    return `<option value="${esc(m.name)}" ${m.name === override ? "selected" : ""}>${esc(m.name)}${m.model_id ? " · " + esc(m.model_id) : ""}${flags ? " · " + esc(flags) : ""}</option>`;
+  }).join("");
+  const chosen = override || def;
+  const chosenSpec = specOf(chosen);
+  const bad = !chosen || !chosenSpec || !chosenSpec.enabled || !chosenSpec.has_key;
+  let note;
+  if (override) {
+    note = chosenSpec
+      ? `自定义覆盖：${chosenSpec.enabled ? "已启用" : "规格已停用"}${chosenSpec.has_key ? " · 密钥就绪" : " · 缺少密钥"}`
+      : "该覆盖指向未知规格，请恢复默认";
+  } else if (def) {
+    note = `跟随默认 → ${def}${defSpec && defSpec.has_key ? "（密钥就绪）" : "（缺少密钥，运行时会回退）"}`;
+  } else {
+    note = `没有已启用的 ${kind} 规格${specs.length ? "" : "（尚未注册）"}；先在下方「模型规格」启用一个，再回来选择。运行时会退回规则逻辑。`;
+  }
+  return `<div class="cap-row">
+    <div class="cap-head">
+      <span class="cap-name">${capLabel(kind)}</span>
+      <span class="cap-en">${esc(kind)}</span>
+      <span class="cap-tag" ${bad ? 'style="color:var(--amber);border-color:rgba(240,192,96,.35)"' : ""}>
+        ${override ? `OVERRIDE · ${esc(override)}` : "FOLLOW DEFAULT"}</span>
+    </div>
+    <div class="cap-controls">
+      <select class="cap-select" data-agent-model="${esc(agent.name)}" data-cap="${esc(kind)}" ${shown.length ? "" : "disabled"}>
+        <option value="">跟随默认${def ? ` · ${esc(def)}` : ""}</option>
+        ${options}
+      </select>
+      <button class="btn btn-ghost btn-sm" data-agent-model-reset="${esc(agent.name)}"
+        data-cap="${esc(kind)}" ${override ? "" : "disabled"}>恢复默认</button>
+    </div>
+    <div class="cap-note">${esc(note)}</div>
+  </div>`;
+}
+
+function agentDetailHTML(agent) {
+  if (!agent) return `<div class="card"><div class="empty">没有可配置的模块</div></div>`;
+  const enabled = agent.enabled !== false;
+  const caps = agent.requires_models || [];
+  const tools = [...new Set([...(agent.tools || []), ...(agent.mandatory_tools || [])])];
+  const overrides = Object.keys(agent.model || {});
+  const body = caps.length
+    ? `<div class="cap-list">${caps.map((cap) => capRow(agent, cap)).join("")}</div>`
+    : `<div class="agent-no-model">
+        <b>规则模块 · 不调用模型</b>
+        <p>这个模块由工具与规则驱动，当前没有模型能力需要选择。以后在代码里声明 requires_models，这里会自动出现按能力选择模型的控件。</p>
+      </div>`;
+  return `<div class="card agent-detail">
+    <div class="agent-detail-head">
+      <span class="agent-avatar">${icon("layers")}</span>
+      <div class="agent-heading">
+        <h2>${esc(agent.name)}</h2>
+        <p>${esc(agent.description || "未填写描述")}</p>
+      </div>
+      <div class="agent-actions">
+        <span class="pill ${enabled ? "pill-ok" : "pill-bad"}">${enabled ? "已启用" : "已停用"}</span>
+        <label class="switch"><input type="checkbox" data-agent-enabled="${esc(agent.name)}" ${enabled ? "checked" : ""}> 参与流水线</label>
+      </div>
+    </div>
+    <div class="agent-facts">
+      ${fact("kind", agent.kind || "—")}
+      ${fact("version", agent.version || "—")}
+      ${fact("tools", tools.join(", ") || "无")}
+      ${fact("models", caps.length ? caps.join(", ") : "不调用模型")}
+      ${fact("overrides", overrides.length ? overrides.map((k) => `${k}=${agent.model[k]}`).join(", ") : "跟随默认")}
+      ${fact("produces", (agent.produces || []).join(", ") || "—")}
+    </div>
+    <div class="agent-body">${body}</div>
+  </div>`;
+}
+
+function modelCardsHTML() {
+  const models = (state.models && state.models.models) || [];
+  const agents = (state.status && state.status.agents) || [];
+  if (!models.length) return `<div class="empty">没有模型规格</div>`;
+  return `<div class="model-grid">${models.map((m) => {
+    const users = agents.filter((a) => Object.values(a.model || {}).includes(m.name));
+    return `<div class="model-card ${m.enabled ? "" : "is-off"}">
+      <div class="model-head">
+        <b>${esc(m.name)}</b>
+        <span class="pill ${m.has_key ? "pill-ok" : "pill-warn"}">${m.has_key ? "KEY" : "NO KEY"}</span>
+        <label><input type="checkbox" data-model-enabled="${esc(m.name)}" ${m.enabled ? "checked" : ""}>启用</label>
+      </div>
+      <div class="model-body">
+        <label class="model-field">MODEL ID
+          <input type="text" data-model-id="${esc(m.name)}" value="${esc(m.model_id || "")}" title="供应商侧模型 id，回车生效">
+        </label>
+        <div class="model-meta">
+          <span>${esc(m.kind)} · ${esc(m.provider)}</span>
+          <span>${m.dimension ? "dim " + esc(m.dimension) : "—"}</span>
+        </div>
+        ${m.note ? `<p class="model-note">${esc(m.note)}</p>` : ""}
+        <div class="model-users">模块覆盖：${users.length
+          ? users.map((u) => `<b>${esc(u.name)}</b>`).join("、") : "—"}</div>
+      </div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+async function pageSettings(params) {
+  pageEl().innerHTML = `<div class="loading">加载中…</div>`;
+  const [status, models] = await Promise.all([call("status"), call("models")]);
+  if (models) state.models = models;
+  if (!status) { pageEl().innerHTML = `<div class="empty">自检失败，无法读取配置</div>`; return; }
+  state.status = status;
+
+  const agents = status.agents || [];
+  if (params && params.agent && agents.some((a) => a.name === params.agent)) {
+    state.cfgAgent = params.agent;
+  }
+  if (!agents.some((a) => a.name === state.cfgAgent)) state.cfgAgent = (agents[0] || {}).name || "";
+  const selected = agents.find((a) => a.name === state.cfgAgent) || null;
+  const db = status.db || {};
+  const login = status.login || {};
+  const enabled = agents.filter((a) => a.enabled !== false).length;
+  const configured = agents.filter((a) => a.configured).length;
+  const modelList = (state.models && state.models.models) || [];
+
+  pageEl().innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">配置中心</div>
+        <div class="page-sub">每个模块独立启停与选择模型 · 写回 config/agents.json 与 config/models.json · 立即生效</div>
+      </div>
+      <div class="page-actions">
+        <span class="pill pill-ok">${enabled}/${agents.length} 启用</span>
+        <span class="pill ${configured ? "pill-cyan" : "pill-dim"}">${configured} 个自定义</span>
+      </div>
+    </div>
+
+    <div class="cfg-layout">
+      <aside class="card cfg-side">
+        <div class="card-head">
+          ${cardTitle("模块清单", "layers", true)}
+          <div class="card-sub">${agents.length} 个</div>
+        </div>
+        <div id="agent-list">${settingsAgentList(agents, state.cfgAgent)}</div>
+        <div class="chart-note left" style="padding:10px 17px 4px">
+          规则模块不调用模型；声明了 requires_models 的模块会在这里按能力选择模型。
+        </div>
+      </aside>
+
+      <div class="cfg-main">
+        <div id="agent-detail-host">${agentDetailHTML(selected)}</div>
+
+        <div class="card">
+          <div class="card-head">
+            ${cardTitle("模型规格", "layers", true)}
+            <div class="card-sub">${modelList.length} 个 · 全局可用性</div>
+          </div>
+          <div id="model-grid-host">${modelCardsHTML()}</div>
+          <div class="chart-note left" style="margin-top:10px">
+            密钥来自环境变量或 .state/ark_key.txt，仓库与配置文件中不保存密钥。
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid grid-2">
       <div class="card">
-        <div class="card-head">${cardTitle("数据库", "layers", true)}
-          ${db.ok ? `<span class="pill pill-ok">${icon("check")}正常</span>` : `<span class="pill pill-bad">异常</span>`}</div>
+        <div class="card-head">
+          ${cardTitle("数据库", "database", true)}
+          ${db.ok ? `<span class="pill pill-ok">${icon("check")}正常</span>` : `<span class="pill pill-bad">异常</span>`}
+        </div>
         <dl class="kv">
-          <dt>岗位</dt><dd>${db.jobs ?? "—"}</dd>
-          <dt>公司</dt><dd>${db.companies ?? "—"}</dd>
-          <dt>打分记录</dt><dd>${db.company_score ?? "—"}</dd>
-          <dt>背调证据</dt><dd>${db.backduty_evidence ?? "—"}</dd>
-          <dt>天眼查原文</dt><dd>${db.backduty_raw ?? "—"}</dd>
-          <dt>适配度</dt><dd>${db.job_fit ?? "—"}</dd>
-          <dt>简历版本</dt><dd>${db.resume_version ?? "—"}</dd>
-          <dt>报错日志</dt><dd>${db.agent_error ?? "—"}</dd>
+          <dt>岗位</dt><dd>${intText(db.jobs)}</dd>
+          <dt>公司</dt><dd>${intText(db.companies)}</dd>
+          <dt>打分记录</dt><dd>${intText(db.company_score)}</dd>
+          <dt>背调证据</dt><dd>${intText(db.backduty_evidence)}</dd>
+          <dt>天眼查原文</dt><dd>${intText(db.backduty_raw)}</dd>
+          <dt>适配度</dt><dd>${intText(db.job_fit)}</dd>
+          <dt>简历版本</dt><dd>${intText(db.resume_version)}</dd>
+          <dt>报错日志</dt><dd>${intText(db.agent_error)}</dd>
         </dl>
-        <div style="display:flex;gap:9px;margin-top:16px">
+        <div style="display:flex;gap:9px;margin-top:14px;flex-wrap:wrap">
           <button class="btn btn-sm" id="btn-init">${icon("refresh")}初始化 / 建表</button>
-          <button class="btn btn-ghost btn-sm" id="btn-refresh">刷新</button>
+          <button class="btn btn-ghost btn-sm" id="btn-refresh-settings">刷新</button>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-head">${cardTitle("数据源", "briefcase", true)}</div>
+        <div class="card-head">${cardTitle("数据源", "briefcase", true)}
+          <div class="card-sub">SOURCE ADAPTERS</div></div>
         ${(status.sources || []).map((s) => `
           <div class="rank-row">
+            <span class="dot" style="background:${s.implemented ? "var(--pink)" : "var(--faint)"}"></span>
             <span class="rank-label" style="width:auto;flex:1">${esc(s.label)}
-              <span class="chart-note">${esc(s.name)}</span></span>
+              <span class="chart-note"> ${esc(s.name)}</span></span>
             ${s.implemented ? `<span class="pill pill-ok">已接入</span>` : `<span class="pill pill-dim">预留</span>`}
           </div>`).join("")}
-        <div class="chart-note left">预留插槽：实现 build_steps 即可接入新平台</div>
+        <div class="chart-note left" style="margin-top:10px">预留插槽：实现 build_steps 即可接入新平台</div>
       </div>
     </div>
 
-    <div class="card section">
-      <div class="card-head">
-        ${cardTitle("配置中心", "cog", true)}
-        <div class="seg" id="cfg-tabs">
-          <button class="seg-btn ${cfgTab === "agents" ? "active" : ""}" data-cfg-tab="agents">agent</button>
-          <button class="seg-btn ${cfgTab === "models" ? "active" : ""}" data-cfg-tab="models">模型</button>
-        </div>
-      </div>
-      <div id="cfg-body">${cfgPanel(cfgTab, status, models)}</div>
-      <div class="chart-note left">写回 config/${cfgTab === "agents" ? "agents.json" : "models.json"}，
-        改动立即生效；命令行同样可改（app agent-set / model-set）</div>
-    </div>
-
-    <div class="card section">
+    <div class="card">
       <div class="card-head">${cardTitle("平台登录", "check", true)}
-        <div class="card-sub">会弹出真实浏览器窗口</div></div>
-      <div class="checkbox-row" id="login-platforms">
-        ${(status.platforms || []).map((p) =>
-          `<label title="${esc(p.note || "")}"><input type="checkbox" data-login="${esc(p.key)}"> ${esc(p.label)}</label>`).join("")}
-      </div>
-      <div style="display:flex;gap:12px;align-items:center;margin-top:14px">
-        <button class="btn btn-sm" id="btn-login">${icon("check")}登录所选</button>
-        <span class="chart-note">登录态存 .state/login，背调自动带上</span>
-      </div>
-      <div style="margin-top:12px">
-        ${Object.entries(login).length
-          ? Object.entries(login).map(([platform, v]) => `
-            <div class="rank-row"><span class="rank-label" style="width:auto;flex:1">${esc(platform)}</span>
-              <span class="pill ${(v === "ok" || (v && v.status === "ok")) ? "pill-ok" : "pill-dim"}">
-                ${esc(typeof v === "string" ? v : (v && v.status) || "未知")}</span></div>`).join("")
-          : `<div class="chart-note left">还没有登录记录</div>`}
+        <div class="card-sub">会弹出真实浏览器窗口 · 登录态存 .state/login</div></div>
+      <div style="display:flex;align-items:flex-start;gap:24px;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <div class="checkbox-row" id="login-platforms">
+            ${(status.platforms || []).map((p) =>
+              `<label title="${esc(p.note || "")}"><input type="checkbox" data-login="${esc(p.key)}"> ${esc(p.label)}</label>`).join("")}
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-sm" id="btn-login">${icon("check")}登录所选</button>
+            <span class="chart-note">背调时自动带上登录态</span>
+          </div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          ${Object.entries(login).length
+            ? Object.entries(login).map(([platform, v]) => `
+              <div class="rank-row"><span class="rank-label" style="width:auto;flex:1">${esc(platform)}</span>
+                <span class="pill ${(v === "ok" || (v && v.status === "ok")) ? "pill-ok" : "pill-dim"}">
+                  ${esc(typeof v === "string" ? v : (v && v.status) || "未知")}</span></div>`).join("")
+            : `<div class="chart-note left">还没有登录记录</div>`}
+        </div>
       </div>
     </div>`;
 
-  $("#btn-init").addEventListener("click", async () => {
+  renderHud();
+  renderTopbar();
+  bindSettings();
+
+  if (params && params.agent) {
+    const row = $(".agent-row.active");
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function bindSettings() {
+  bindAgentPicks();
+  bindAgentControls();
+  bindModelSpecs();
+
+  const initBtn = $("#btn-init");
+  if (initBtn) initBtn.addEventListener("click", async () => {
     chatLog("step", "初始化", "开始建表…");
     openDrawer();
     const result = await call("init");
     chatLog("step", "初始化", result ? "完成" : "失败");
-    router();
+    await pageSettings({ agent: state.cfgAgent });
   });
-  $("#btn-refresh").addEventListener("click", router);
 
-  // agent 开关：勾选状态直接写回 config/agents.json
-  bindAgentToggles();
-  bindConfigTabs();
+  const refreshBtn = $("#btn-refresh-settings");
+  if (refreshBtn) refreshBtn.addEventListener("click", () => pageSettings({ agent: state.cfgAgent }));
 
-  // 数据源 / 模型 / agent 三块一起刷新
-  async function bindAgentToggles() {
-    $$("[data-agent-enabled]").forEach((box) => box.addEventListener("change", async () => {
-      const name = box.dataset.agentEnabled;
-      const enable = box.checked;
-      const res = await window.api.call("agent-set", enable
-        ? { name, enable: true }
-        : { name, disable: true });
-      if (res.code !== 0) {
-        chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
-        openDrawer();
-        box.checked = !enable;   // 回滚界面状态
-        return;
-      }
-      chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
-      const fresh = await call("status");
-      if (fresh) state.status = fresh;
-    }));
-
-    // 模型开关与模型 id
-    $$("[data-model-enabled]").forEach((box) => box.addEventListener("change", async () => {
-      const name = box.dataset.modelEnabled;
-      const enable = box.checked;
-      const res = await window.api.call("model-set", enable
-        ? { spec: name, enable: true }
-        : { spec: name, disable: true });
-      if (res.code !== 0) {
-        chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
-        openDrawer();
-        box.checked = !enable;
-        return;
-      }
-      chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
-    }));
-
-    $$("[data-model-id]").forEach((input) => input.addEventListener("keydown", async (event) => {
-      if (event.key !== "Enter") return;
-      const name = input.dataset.modelId;
-      const value = input.value.trim();
-      if (!value) return;
-      const res = await window.api.call("model-set", { spec: name, "model-id": value });
-      if (res.code !== 0) {
-        chatLog("err", "配置", `${name} 的模型 id 写入失败：${(res.stderr || res.stdout || "").trim()}`);
-        openDrawer();
-        return;
-      }
-      chatLog("step", "配置", `${name} 模型 id 改为 ${value}`);
-      input.blur();
-    }));
-  }
-
-  // 子页签：agent / 模型，切页只重绘面板，不重拉数据
-  function bindConfigTabs() {
-    $$("[data-cfg-tab]").forEach((btn) => btn.addEventListener("click", () => {
-      state.cfgTab = btn.dataset.cfgTab;
-      $$("[data-cfg-tab]").forEach((b) => b.classList.toggle("active", b === btn));
-      const body = $("#cfg-body");
-      if (body) body.innerHTML = cfgPanel(state.cfgTab, status, models);
-      const note = $(".chart-note.left:last-of-type");
-      if (note) {
-        note.textContent = `写回 config/${state.cfgTab === "agents" ? "agents.json" : "models.json"}` +
-          "，改动立即生效；命令行同样可改（app agent-set / model-set）";
-      }
-      bindAgentToggles();   // 新面板要重新绑定
-    }));
-  }
-  $("#btn-login").addEventListener("click", async () => {
-    const platforms = $$("input[data-login]:checked").map((n) => n.dataset.login);
+  const loginBtn = $("#btn-login");
+  if (loginBtn) loginBtn.addEventListener("click", async () => {
+    const platforms = $$("input[data-login]:checked").map((node) => node.dataset.login);
     if (!platforms.length) { chatLog("err", "校验", "请选择平台"); openDrawer(); return; }
     openDrawer();
     chatLog("step", "登录", `将为 ${platforms.join("、")} 弹出浏览器`);
@@ -1240,27 +1759,142 @@ async function pageSettings() {
       if (event.type === "login") chatLog("step", "登录", `${event.platform}: ${event.message}`);
       else if (event.type === "step") chatLog("step", "登录", `${event.name} ${event.detail || ""}`);
       else if (event.type === "error") chatLog("err", "登录", event.message || "");
-      else if (event.type === "__done__") { chatLog("step", "登录", "流程结束"); router(); }
+      else if (event.type === "__done__") {
+        chatLog("step", "登录", "流程结束");
+        pageSettings({ agent: state.cfgAgent });
+      }
     });
   });
+}
+
+function bindAgentPicks() {
+  $$("[data-agent-pick]").forEach((row) => row.addEventListener("click", () => {
+    state.cfgAgent = row.dataset.agentPick;
+    history.replaceState(null, "", `#/settings?agent=${encodeURIComponent(state.cfgAgent)}`);
+    paintAgentArea();
+  }));
+}
+
+function bindAgentControls() {
+  const enableBox = $("[data-agent-enabled]");
+  if (enableBox) enableBox.addEventListener("change", async () => {
+    const name = enableBox.dataset.agentEnabled;
+    const enable = enableBox.checked;
+    const res = await window.api.call("agent-set",
+      enable ? { name, enable: true } : { name, disable: true });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      enableBox.checked = !enable;
+      return;
+    }
+    chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
+    await reloadStatus();
+    paintAgentArea();
+  });
+
+  $$("[data-agent-model]").forEach((select) => select.addEventListener("change", async () => {
+    const name = select.dataset.agentModel;
+    const cap = select.dataset.cap;
+    const value = select.value;
+    const res = await window.api.call("agent-set", value
+      ? { name, model: `${cap}=${value}` }
+      : { name, "model-default": cap });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 的 ${cap} 模型写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      return;
+    }
+    chatLog("step", "配置", `${name} · ${cap} → ${value || "跟随默认"}`);
+    await reloadStatus();
+    paintAgentArea();
+  }));
+
+  $$("[data-agent-model-reset]").forEach((btn) => btn.addEventListener("click", async () => {
+    const name = btn.dataset.agentModelReset;
+    const cap = btn.dataset.cap;
+    const res = await window.api.call("agent-set", { name, "model-default": cap });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 的 ${cap} 恢复默认失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      return;
+    }
+    chatLog("step", "配置", `${name} · ${cap} 已恢复默认`);
+    await reloadStatus();
+    paintAgentArea();
+  }));
+}
+
+function bindModelSpecs() {
+  $$("[data-model-enabled]").forEach((box) => box.addEventListener("change", async () => {
+    const name = box.dataset.modelEnabled;
+    const enable = box.checked;
+    const res = await window.api.call("model-set", enable
+      ? { spec: name, enable: true }
+      : { spec: name, disable: true });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      box.checked = !enable;
+      return;
+    }
+    chatLog("step", "配置", `${name} 已${enable ? "启用" : "停用"}`);
+    await reloadModels();
+    paintAgentArea();
+  }));
+
+  $$("[data-model-id]").forEach((input) => input.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") return;
+    const name = input.dataset.modelId;
+    const value = input.value.trim();
+    if (!value) return;
+    const res = await window.api.call("model-set", { spec: name, "model-id": value });
+    if (res.code !== 0) {
+      chatLog("err", "配置", `${name} 的模型 id 写入失败：${(res.stderr || res.stdout || "").trim() || res.code}`);
+      openDrawer();
+      return;
+    }
+    chatLog("step", "配置", `${name} 模型 id 改为 ${value}`);
+    await reloadModels();
+    paintAgentArea();
+  }));
+}
+
+async function reloadStatus() {
+  const fresh = await call("status");
+  if (fresh) state.status = fresh;
+  return fresh;
+}
+
+async function reloadModels() {
+  const fresh = await call("models");
+  if (fresh) state.models = fresh;
+  return fresh;
+}
+
+function paintAgentArea() {
+  const agents = (state.status && state.status.agents) || [];
+  if (!agents.some((a) => a.name === state.cfgAgent)) state.cfgAgent = (agents[0] || {}).name || "";
+  const selected = agents.find((a) => a.name === state.cfgAgent) || null;
+  const list = $("#agent-list");
+  const detail = $("#agent-detail-host");
+  if (list) list.innerHTML = settingsAgentList(agents, state.cfgAgent);
+  if (detail) detail.innerHTML = agentDetailHTML(selected);
+  const host = $("#model-grid-host");
+  if (host) host.innerHTML = modelCardsHTML();
+  bindAgentPicks();
+  bindAgentControls();
+  bindModelSpecs();
+  renderHud();
+  renderTopbar();
 }
 
 // ---------------------------------------------------------------- 启动
 (async function boot() {
   const [status, models] = await Promise.all([call("status"), call("models")]);
-  const db = (status && status.db) || {};
-  const pill = $("#db-status");
-  pill.textContent = db.ok ? `已连接 · ${db.jobs} 岗位` : "数据库未连接";
-
-  const list = (models && models.models) || [];
-  const usable = list.filter((m) => m.enabled && m.has_key);
-  const chatModel = usable.find((m) => m.kind === "chat");
-
-  $("#topbar-right").innerHTML = `
-    <span class="pill ${db.ok ? "pill-ok" : "pill-bad"}"><span class="dot"></span>${db.ok ? "已连接" : "未连接"}</span>
-    <span class="pill">${icon("briefcase")}${db.jobs ?? 0}</span>
-    <span class="pill">${icon("building")}${db.companies ?? 0}</span>
-    <span class="pill ${chatModel ? "pill-cyan" : "pill-dim"}">${icon("layers")}模型 ${usable.length}</span>`;
-
+  if (status) state.status = status;
+  if (models) state.models = models;
+  renderHud();
+  renderTopbar();
   router();
 })();

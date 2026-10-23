@@ -2,12 +2,79 @@
   "name": "jobs-desktop",
   "version": "0.1.0",
   "description": "求职背调工作台（Electron 壳，调 boss_crawler app CLI）",
+  "author": "ThisZhouS",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js"
+    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/swarm.js",
+    "build:win": "electron-builder --win --x64",
+    "dist": "electron-builder --win --x64"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.thiszhous.jobsdesktop",
+    "productName": "JobsDesktop",
+    "electronDist": "node_modules/electron/dist",
+    "artifactName": "JobsDesktop-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../boss_crawler",
+        "to": "backend/boss_crawler",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../config",
+        "to": "backend/config"
+      },
+      {
+        "from": "../db",
+        "to": "backend/db"
+      },
+      {
+        "from": "../pyproject.toml",
+        "to": "backend/pyproject.toml"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "backend/requirements.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "artifactName": "JobsDesktop-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "JobsDesktop-Portable-${version}-${arch}.${ext}"
+    }
   }
 }
