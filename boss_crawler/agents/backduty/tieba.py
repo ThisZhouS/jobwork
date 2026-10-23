@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 from ..registry import register
-from ..toolagent import ToolAgent, ToolCall
+from ..toolagent import ToolCall
+from .relevance import AiSocialAgent
 
 
-class TiebaAgent(ToolAgent):
+class TiebaAgent(AiSocialAgent):
     name = "tieba"
     site = "百度贴吧"
     description = "调 tieba_search 工具，汇总贴吧里关于该公司的帖子"

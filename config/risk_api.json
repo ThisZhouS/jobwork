@@ -1,16 +1,20 @@
 {
-  "_说明": "阿里云云市场（API 市场）风险接口配方。买到接口后，把商品页上的『调用地址』拆成 base + path、把参数名填进 params、把响应字段填进 fields，无需改代码。AppCode 不要写在这里，放环境变量 ALIYUN_APPCODE 或 .state/aliyun_appcode.txt。",
+  "_说明": "阿里云云市场（API 市场）接口配方。把商品页上的『调用地址』拆成 base + path，参数填 params（GET）或 body（POST），响应字段填 fields / profile_fields，无需改代码。AppCode 不要写在这里，放环境变量 ALIYUN_APPCODE 或 .state/aliyun_appcode.txt。",
   "_怎么填": {
+    "method": "GET 或 POST；商品页『请求方式』",
     "base": "商品页『调用地址』的域名部分，例如 https://xxxx.market.alicloudapi.com",
     "path": "域名后面的路径，例如 /enterprise/risk",
-    "params": "请求参数名 -> 值；用 {company} 占位公司名",
-    "items_path": "响应里行列表的位置（点号分隔）；留空表示自动找第一个字典列表",
-    "fields": "统一字段 -> 原始字段名，例如 case_no 填 案号 的实际字段"
+    "params": "GET 查询参数名 -> 值；用 {company} 占位公司名",
+    "body": "POST 表单字段名 -> 值；用 {company} 占位公司名",
+    "items_path": "响应里行列表的位置（点号分隔）；留空或取不到时自动找第一个字典列表",
+    "fields": "统一字段 -> 原始字段名，例如 case_no 填 案号 的实际字段",
+    "profile_fields": "工商档案字段 -> 原始字段名，会写进 Finding.meta.profile 供评分使用"
   },
   "_参考行情": "司法不良（详版）￥2/10 次；全国企业数据报告 ￥0/10 次；企业工商信息 ￥2/5 次起、￥60/1000 次（2026-10 云市场商品页）",
   "profiles": {
     "judicial": {
       "enabled": false,
+      "method": "GET",
       "base": "",
       "path": "",
       "params": {
@@ -30,20 +34,38 @@
       "note": "占位：把你在云市场购买的『司法不良（详版）』调用地址填进来"
     },
     "business": {
-      "enabled": false,
-      "base": "",
-      "path": "",
-      "params": {
-        "companyName": "{company}"
+      "enabled": true,
+      "method": "POST",
+      "base": "https://kzgsmhv1.market.alicloudapi.com",
+      "path": "/api/company_search/query",
+      "params": {},
+      "body": {
+        "keyword": "{company}",
+        "pageNum": "1",
+        "pageSize": "10"
       },
-      "items_path": "",
+      "items_path": "data.companyList",
       "fields": {
-        "title": "name",
-        "risk_type": "regStatus",
-        "date": "estiblishTime"
+        "title": "companyName",
+        "risk_type": "companyStatus",
+        "case_no": "companyCode",
+        "date": "establishDate",
+        "status": "companyStatus"
       },
-      "budget": 20,
-      "note": "占位：把『企业工商信息查询』的调用地址填进来"
+      "profile_fields": {
+        "name": "companyName",
+        "legal_person": "legalPerson",
+        "reg_status": "companyStatus",
+        "credit_code": "creditNo",
+        "reg_capital": "capital",
+        "estiblish_time": "establishDate",
+        "reg_location": "address",
+        "industry": "industry",
+        "business_scope": "businessScope",
+        "company_org_type": "companyType"
+      },
+      "budget": 8,
+      "note": "阿里云商品 cmapi00066571『企业工商信息模糊查询』：POST /api/company_search/query，APPCODE 认证。仅 10 次额度，预算留 2 次余量"
     }
   }
 }

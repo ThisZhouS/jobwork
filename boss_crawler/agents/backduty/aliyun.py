@@ -1,4 +1,4 @@
-"""阿里云云市场风险背调 agent。
+"""阿里云云市场工商信息背调 agent。
 
 只做一件事：调 ``aliyun_risk`` 工具，把行汇总成 findings。
 地址/字段映射/AppCode 全在配置与工具里，这里不碰。
@@ -15,9 +15,18 @@ from ..toolagent import ToolAgent, ToolCall
 class AliyunRiskAgent(ToolAgent):
     name = "aliyun"
     site = "阿里云云市场"
-    description = "调云市场风险接口（司法涉诉/工商），按次计费，需 ALIYUN_APPCODE"
+    description = "调云市场工商信息接口（AppCode 认证、按次计费）"
     requires = ("http",)
-    tools = (ToolCall("aliyun_risk", source="aliyun"),)
+    tools = (
+        ToolCall(
+            "aliyun_risk",
+            source="aliyun",
+            params=lambda request: {
+                "company": request.require_company(),
+                "profile": "business",
+            },
+        ),
+    )
 
 
 register(AliyunRiskAgent)

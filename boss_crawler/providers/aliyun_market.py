@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from .. import config
+
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_FILE = ROOT / "config" / "risk_api.json"
-STATE_FILE = ROOT / ".state" / "aliyun_appcode.txt"
+CONFIG_FILE = config.CONFIG_DIR / "risk_api.json"
+STATE_FILE = config.STATE_DIR / "aliyun_appcode.txt"
 ENV_NAME = "ALIYUN_APPCODE"
 
 
@@ -39,12 +41,18 @@ class RiskApiProfile:
     name: str
     base: str
     path: str
-    #: 请求参数名 -> 值模板，``{company}`` 会被替换成公司名
+    #: GET / POST；云市场的接口两种都有
+    method: str = "GET"
+    #: GET 的查询参数名 -> 值模板，``{company}`` 会被替换成公司名
     params: dict[str, str] = field(default_factory=dict)
+    #: POST 的表单字段名 -> 值模板，``{company}`` 会被替换成公司名
+    body: dict[str, str] = field(default_factory=dict)
     #: 响应里「行列表」的位置，点号分隔；空表示响应本身是列表
     items_path: str = ""
-    #: 统一字段 -> 原始字段名
+    #: 统一风险字段 -> 原始字段名
     fields: dict[str, str] = field(default_factory=dict)
+    #: 统一工商档案字段 -> 原始字段名（会放进 Finding.meta["profile"]）
+    profile_fields: dict[str, str] = field(default_factory=dict)
     enabled: bool = False
     budget: int = 20
     note: str = ""
@@ -93,9 +101,13 @@ def load(path: Path | None = None) -> dict[str, RiskApiProfile]:
             name=name,
             base=str(raw.get("base") or ""),
             path=str(raw.get("path") or ""),
+            method=str(raw.get("method") or "GET").upper(),
             params={str(k): str(v) for k, v in (raw.get("params") or {}).items()},
+            body={str(k): str(v) for k, v in (raw.get("body") or {}).items()},
             items_path=str(raw.get("items_path") or ""),
             fields={str(k): str(v) for k, v in (raw.get("fields") or {}).items()},
+            profile_fields={str(k): str(v)
+                            for k, v in (raw.get("profile_fields") or {}).items()},
             enabled=bool(raw.get("enabled", False)),
             budget=int(raw.get("budget", 20) or 20),
             note=str(raw.get("note") or ""),
@@ -116,6 +128,15 @@ def build_url(profile: RiskApiProfile, company: str, **extra: Any) -> str:
     if not params:
         return profile.url
     return f"{profile.url}?{urlencode(params)}"
+
+
+def build_body(profile: RiskApiProfile, company: str, **extra: Any) -> dict[str, str]:
+    """POST 表单；值里的 ``{company}`` 会被替换。"""
+    body = {key: str(value).replace("{company}", company)
+            for key, value in (profile.body or {}).items()}
+    for key, value in extra.items():
+        body[key] = str(value).replace("{company}", company)
+    return body
 
 
 def dig(payload: Any, path: str) -> Any:
@@ -171,8 +192,38 @@ def normalize(payload: Any, profile: RiskApiProfile) -> list[dict[str, Any]]:
             row[target] = item.get(source)
         row.setdefault("title", "")
         row.setdefault("risk_type", "未分类")
+        profile_data = {target: item.get(source)
+                        for target, source in (profile.profile_fields or {}).items()
+                        if item.get(source) not in (None, "")}
+        if profile_data:
+            row["profile"] = profile_data
         rows.append(row)
     return rows
+
+
+def best_match(rows: list[dict[str, Any]], company: str) -> dict[str, Any] | None:
+    """模糊搜索会返回多家公司；挑出与查询名最贴近的一条。
+
+    精确同名 > 互相包含 > 其余；同等条件下名字更短（后缀更少）优先。
+    """
+    needle = str(company or "").strip().lower()
+    if not rows:
+        return None
+
+    def rank(row: dict[str, Any]) -> tuple[int, int]:
+        profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+        name = str(profile.get("name") or row.get("title") or "").strip().lower()
+        if not name:
+            return (0, 0)
+        if name == needle:
+            tier = 3
+        elif needle and (needle in name or name in needle):
+            tier = 2
+        else:
+            tier = 1
+        return (tier, -len(name))
+
+    return max(rows, key=rank)
 
 
 def describe(path: Path | None = None) -> dict[str, Any]:
@@ -186,7 +237,7 @@ def describe(path: Path | None = None) -> dict[str, Any]:
             str(STATE_FILE) if STATE_FILE.exists() else None),
         "profiles": [
             {"name": p.name, "configured": p.configured, "enabled": p.enabled,
-             "budget": p.budget, "note": p.note}
+             "method": p.method, "budget": p.budget, "note": p.note}
             for p in profiles.values()
         ],
     }
@@ -197,6 +248,8 @@ __all__ = [
     "ENV_NAME",
     "RiskApiProfile",
     "appcode",
+    "best_match",
+    "build_body",
     "build_url",
     "config_path",
     "describe",

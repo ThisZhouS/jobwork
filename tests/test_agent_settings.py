@@ -81,6 +81,35 @@ def test_valid_model_accepted(cfg):
     assert conf.model == {"chat": "chat.doubao"}
 
 
+def test_clear_one_model_keeps_options_and_enabled(cfg):
+    agent_settings.set_config("resume_tailor", model={"chat": "chat.doubao"},
+                              options={"max_questions": 2}, path=cfg)
+    conf = agent_settings.set_config("resume_tailor", clear_models=["chat"], path=cfg)
+    assert conf.model == {}
+    assert conf.options == {"max_questions": 2}
+    assert conf.enabled is True
+    # 选项还在，所以条目不能被当成"与默认一致"删掉
+    assert agent_settings.load(cfg)["resume_tailor"].options == {"max_questions": 2}
+
+
+def test_set_one_model_keeps_other_capabilities(cfg):
+    agent_settings.set_config("resume_tailor", model={"chat": "chat.doubao"}, path=cfg)
+    conf = agent_settings.set_config("resume_tailor",
+                                     model={"embedding": "embedding.doubao"}, path=cfg)
+    assert conf.model == {"chat": "chat.doubao", "embedding": "embedding.doubao"}
+
+
+def test_clear_unknown_capability_rejected(cfg):
+    with pytest.raises(ValueError, match="未知模型能力"):
+        agent_settings.set_config("resume_tailor", clear_models=["vision"], path=cfg)
+
+
+def test_set_and_clear_same_capability_rejected(cfg):
+    with pytest.raises(ValueError, match="不能同时"):
+        agent_settings.set_config("resume_tailor", model={"chat": "chat.doubao"},
+                                  clear_models=["chat"], path=cfg)
+
+
 # ---------------------------------------------------------------- 生效
 def test_effective_merges_code_and_config(cfg):
     agent_settings.set_config("zhihu", enabled=False, path=cfg)
@@ -90,6 +119,15 @@ def test_effective_merges_code_and_config(cfg):
     assert by_name["zhihu"]["configured"] is True
     assert by_name["weibo"]["enabled"] is True
     assert by_name["weibo"]["configured"] is False
+
+
+def test_effective_rows_carry_module_metadata(cfg):
+    rows = {row["name"]: row for row in agent_settings.effective(cfg)}
+    assert rows["resume_tailor"]["requires_models"] == ["chat"]
+    assert rows["company_score"]["requires_models"] == []
+    assert rows["zhihu"]["description"]
+    assert "zhihu_search" in rows["zhihu"]["tools"]
+    assert rows["zhihu"]["produces"] == ["findings"]
 
 
 def test_describe_reports_disabled(cfg):

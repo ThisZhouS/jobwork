@@ -24,9 +24,11 @@ import os
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+from .. import config
+
+CONFIG_DIR = config.CONFIG_DIR
 CONFIG_FILE = CONFIG_DIR / "agents.json"
 
 
@@ -129,23 +131,42 @@ def set_config(
     *,
     enabled: bool | None = None,
     model: dict[str, str] | None = None,
+    clear_models: Iterable[str] | None = None,
     options: dict[str, Any] | None = None,
     path: Path | None = None,
 ) -> AgentConfig:
     """改一个 agent 的配置并落盘，返回合并后的结果。
 
     ``None`` 表示"这一项不动"，所以要把某 agent 恢复默认请用 :func:`reset_config`。
+    ``clear_models`` 只清掉指定能力的覆盖，其他能力与选项保持不变——这样设置页
+    可以把某个能力改回"跟随默认"，而不用整条配置重置。
     """
+    from .models import KINDS
+
     _validate_agent(name)
     if model is not None:
         _validate_model(model)
+    clearing = {str(kind) for kind in (clear_models or ())}
+    unknown = clearing - set(KINDS)
+    if unknown:
+        raise ValueError(f"未知模型能力：{'、'.join(sorted(unknown))}"
+                         f"（可用：{'、'.join(KINDS)}）")
+    both = clearing & set(model or {})
+    if both:
+        raise ValueError(f"同一能力不能同时设置和清除：{'、'.join(sorted(both))}")
 
     configs = load(path)
     current = configs.get(name) or AgentConfig(name=name)
+    merged_model = dict(current.model)
+    if model is not None:
+        merged_model.update(model)
+    for kind in clearing:
+        merged_model.pop(kind, None)
+    _validate_model(merged_model)
     updated = replace(
         current,
         enabled=current.enabled if enabled is None else bool(enabled),
-        model=current.model if model is None else dict(model),
+        model=merged_model,
         options=current.options if options is None else dict(options),
     )
     # 与默认完全一致就不落盘：否则配置文件里会堆满

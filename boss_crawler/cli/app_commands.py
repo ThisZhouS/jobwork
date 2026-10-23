@@ -74,15 +74,28 @@ def _parse_pairs(raw: str | None, *, sep: str = "=") -> dict | None:
 
 
 def _agent_rows() -> list[dict]:
-    """agent 列表：注册表声明 + 配置文件的启用状态。"""
+    """agent 列表：注册表声明 + 配置文件的启用状态。
+
+    前端用这份数据画"模块面板"，所以描述、依赖、工具、模型能力都要带上，
+    不能只给名字。
+    """
     from ..agents.settings import effective
 
     try:
         return [
-            {"name": row["name"], "kind": row["kind"],
+            {"name": row["name"],
+             "kind": row["kind"],
+             "version": row.get("version") or "",
+             "description": row.get("description") or "",
+             "requires": row.get("requires") or [],
+             "produces": row.get("produces") or [],
+             "requires_models": row.get("requires_models") or [],
+             "tools": row.get("tools") or [],
+             "mandatory_tools": row.get("mandatory_tools") or [],
              "enabled": row.get("enabled", True),
              "model": row.get("model") or {},
-             "requires_models": row.get("requires_models") or []}
+             "options": row.get("options") or {},
+             "configured": bool(row.get("configured"))}
             for row in effective()
         ]
     except Exception:  # noqa: BLE001
@@ -168,12 +181,23 @@ def cmd_app(args) -> int:
 
             from ..agents import AgentContext
 
+            job = None
+            if getattr(args, "job_id", None):
+                rows = store.jobs_for_fit(limit=1, job_ids=[args.job_id])
+                job = rows[0] if rows else None
+                if job is None:
+                    print(f"找不到岗位 {args.job_id}")
+                    return 2
+
             options = Options(
                 platforms=tuple(_platform_list(args)),
                 source=args.source,
                 filters={"query": args.query, "city": args.city, "pages": args.pages,
                          "salary": args.salary, "experience": args.experience,
-                         "degree": args.degree},
+                         "degree": args.degree,
+                         "job": job,
+                         "job_id": args.job_id if job else None},
+                company_key=getattr(args, "company_key", None),
                 limit=args.limit,
                 job_limit=args.job_limit,
                 enable_crawl=not args.no_crawl,
@@ -291,13 +315,22 @@ def cmd_app(args) -> int:
             enabled = True if args.enable else (False if args.disable else None)
             model = _parse_pairs(args.model, sep="=")
             options = _parse_pairs(args.option, sep="=")
+            raw_clear = getattr(args, "model_default", None)
+            clear_models = ([item.strip() for item in str(raw_clear).split(",")
+                             if item.strip()] or None) if raw_clear else None
             try:
-                conf = set_config(args.name, enabled=enabled, model=model, options=options)
+                conf = set_config(args.name, enabled=enabled, model=model,
+                                  clear_models=clear_models, options=options)
             except (ValueError, KeyError) as exc:
                 print(f"配置失败：{exc}")
                 return 2
-            print(f"{conf.name} 已更新：enabled={conf.enabled} "
-                  f"model={conf.model or '{}'} options={conf.options or '{}'}")
+            if args.json:
+                print(json.dumps({"agent": conf.name, "enabled": conf.enabled,
+                                  "model": conf.model, "options": conf.options},
+                                 ensure_ascii=False, default=str))
+            else:
+                print(f"{conf.name} 已更新：enabled={conf.enabled} "
+                      f"model={conf.model or '{}'} options={conf.options or '{}'}")
             return 0
 
         if args.action == "agent-reset":

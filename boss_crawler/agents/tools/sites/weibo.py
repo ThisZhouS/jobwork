@@ -8,14 +8,13 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 from urllib.parse import quote
 
 from ...base import AgentStatus
 from ..base import Tool, ToolBox, ToolResult, register_tool
-from ..parsing import normalize_date, strip_tags
+from ..parsing import extract_json_object, normalize_date, strip_tags
 
 _DETAIL_URL = "https://m.weibo.cn/detail/{id}"
 # 微博搜索容器 id 的固定格式：100103type=1&q=关键词
@@ -79,10 +78,7 @@ def _json_blocked(html: str) -> bool:
 
 def parse_weibo_json(text: str, company: str) -> list[dict]:
     """解析 m.weibo.cn 的 container 返回，递归找 card_type=9 的博文。"""
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return []
+    payload = extract_json_object(text)
     if not isinstance(payload, dict) or payload.get("ok") != 1:
         return []
 

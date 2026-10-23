@@ -46,14 +46,17 @@ def test_describe_never_exposes_key(monkeypatch):
     assert "super-secret-value" not in json.dumps(described)
 
 
-def test_builtin_embedding_is_available_and_chat_is_disabled():
+def test_builtin_embedding_available_and_chat_specs():
     names = model_names()
     assert "embedding.doubao" in names
     assert "chat.doubao" in names
+    assert "chat.deepseek" in names
     assert get_model("embedding.doubao").dimension == 2048
-    # 对话模型默认停用（当前密钥只有嵌入权限）
+    # 火山对话模型默认停用（当前密钥只有嵌入权限）
     assert get_model("chat.doubao").enabled is False
-    assert models_for("chat") == []
+    # DeepSeek 是默认启用的对话规格；没有密钥时 resolve 会返回 no_key
+    assert get_model("chat.deepseek").enabled is True
+    assert [spec.name for spec in models_for("chat")] == ["chat.deepseek"]
 
 
 def test_duplicate_spec_rejected():
@@ -117,12 +120,12 @@ async def test_box_returns_failure_not_exception_when_off():
     assert result.usable is False
 
 
-async def test_box_no_spec_for_chat_kind():
+async def test_box_chat_without_key_reports_no_key():
     box = ModelBox(AgentContext())
     assert box.available("chat") is False
     result = await box.chat([{"role": "user", "content": "hi"}])
     assert result.ok is False
-    assert result.code == "no_spec"
+    assert result.code == "no_key"
 
 
 async def test_box_dry_run_does_not_call():

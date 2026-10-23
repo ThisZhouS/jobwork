@@ -120,6 +120,37 @@ def extract_json_after(html: str, key: str) -> Any:
     return None
 
 
+def extract_json_object(text: str) -> Any:
+    """从纯 JSON 或 ``<html><body><p>{...}</p>`` 这类包裹中取对象。
+
+    浏览器渲染 JSON 接口时经常套一层 HTML；直接 ``json.loads`` 会失败。
+    注意不能对整段做 HTML 反转义再解析：``&quot;`` 会变成裸引号，反而破坏 JSON。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    if raw.startswith("<"):
+        try:
+            from lxml import html as lxml_html
+
+            candidates.append(lxml_html.fromstring(raw).text_content())
+        except Exception:  # noqa: BLE001 - 解析失败就走下面的花括号截取
+            pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(raw[start:end + 1])
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None
+
+
 def regex_field(html: str, key: str) -> str | None:
     """抓 ``"key":"value"`` 形式的标量字段。
 

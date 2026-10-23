@@ -18,14 +18,15 @@ from ..base import Tool, ToolBox, ToolResult, register_tool
 from ..parsing import normalize_date, strip_tags
 
 _POST_LINK_RE = re.compile(
-    r'<a[^>]+href="(?P<href>/p/\d+[^"]*)"[^>]*>(?P<body>.*?)</a>',
+    r'<a[^>]+href="(?P<href>(?:https?://tieba\.baidu\.com)?/p/\d+[^"]*)"[^>]*>(?P<body>.*?)</a>',
     re.S | re.I,
 )
 # 搜索页每条结果包在 <div class="s_post">…</div> 里
 _SEARCH_ITEM_RE = re.compile(
     r'<div[^>]+class="[^"]*s_post[^"]*"[^>]*>(?P<body>.*?)</div>\s*</div>', re.S | re.I)
 _TITLE_RE = re.compile(
-    r'<a[^>]+href="(?P<href>/p/\d+[^"]*)"[^>]*>(?P<body>.*?)</a>', re.S | re.I)
+    r'<a[^>]+href="(?P<href>(?:https?://tieba\.baidu\.com)?/p/\d+[^"]*)"[^>]*>(?P<body>.*?)</a>',
+    re.S | re.I)
 _FLOOR_RE = re.compile(r"(?P<date>20\d{2}[-/]\d{1,2}[-/]\d{1,2})")
 
 _MIN_HTML = 500
@@ -40,24 +41,29 @@ class TiebaSearchTool(Tool):
 
     async def call(self, box: ToolBox, company: str = "", **_: Any) -> ToolResult:
         keyword = quote(company)
-        urls = (
-            f"https://tieba.baidu.com/f?kw={keyword}&ie=utf-8",
-            f"https://tieba.baidu.com/f/search/res?ie=utf-8&qw={keyword}",
+        targets = (
+            (f"https://tieba.baidu.com/f?kw={keyword}&ie=utf-8",
+             ".thread-title, .thread-card, a[href*='/p/']"),
+            (f"https://tieba.baidu.com/f/search/res?ie=utf-8&qw={keyword}",
+             ".s_post, .thread-title, a[href*='/p/']"),
         )
         rows: list[dict] = []
         blocked = False
         errors: list[str] = []
         notes: list[str] = []
 
-        for url in urls:
-            outcome = await box.fetch_page(url, min_len=_MIN_HTML)
+        for url, selector in targets:
+            outcome = await box.fetch_page(
+                url, min_len=_MIN_HTML, wait_selector=selector)
             if outcome.blocked:
                 blocked = True
                 continue
             if outcome.status is AgentStatus.FAILED:
                 errors.append(outcome.error or "抓取失败")
                 continue
-            found = parse_tieba_search(outcome.html, company)
+            found = parse_tieba_rendered(outcome.html, company)
+            if not found:
+                found = parse_tieba_search(outcome.html, company)
             if not found:
                 found = parse_tieba_bar(outcome.html, company)
             rows.extend(found)
@@ -73,6 +79,10 @@ class TiebaSearchTool(Tool):
         return ToolResult.ok_(self.name, rows, notes=notes)
 
 
+def _absolute(href: str) -> str:
+    return href if href.startswith("http") else f"https://tieba.baidu.com{href}"
+
+
 def parse_tieba_search(html: str, company: str) -> list[dict]:
     """解析全站搜索结果页。"""
     out: list[dict] = []
@@ -86,13 +96,61 @@ def parse_tieba_search(html: str, company: str) -> list[dict]:
             snippet = strip_tags(block)[:400]
             out.append({
                 "title": title,
-                "url": f"https://tieba.baidu.com{match.group('href')}",
+                "url": _absolute(match.group("href")),
                 "snippet": snippet or title,
                 "published_at": first_date(block),
                 "company": company,
                 "entry": "search",
             })
             break      # 每个结果块只取主标题，避免楼中楼重复
+    return out
+
+
+def parse_tieba_rendered(html: str, company: str) -> list[dict]:
+    """解析新版贴吧的 DOM 卡片：标题在卡片里，链接在同卡片的操作栏里。
+
+    这类页面没有「标题包在 <a> 里」的结构，按顺序把卡片和去重后的
+    ``/p/<id>`` 链接配对。
+    """
+    try:
+        from lxml import html as lxml_html
+
+        doc = lxml_html.fromstring(html or "")
+    except Exception:  # noqa: BLE001 - 解析失败交给旧解析器兜底
+        return []
+
+    cards = doc.xpath('//*[contains(@class,"thread-item")]')
+    if not cards:
+        cards = doc.xpath('//*[contains(@class,"thread-card")]')
+    if not cards:
+        return []
+
+    links: list[str] = []
+    seen: set[str] = set()
+    for href in doc.xpath('//a[contains(@href,"/p/")]/@href'):
+        match = re.search(r"/p/(\d+)", str(href))
+        if not match:
+            continue
+        url = f"https://tieba.baidu.com/p/{match.group(1)}"
+        if url in seen:
+            continue
+        seen.add(url)
+        links.append(url)
+
+    out: list[dict] = []
+    for card, url in zip(cards, links):
+        title = " ".join(card.text_content().split())
+        title = re.sub(r"\s*\d+$", "", title).strip()
+        if len(title) < 5:
+            continue
+        out.append({
+            "title": title[:120],
+            "url": url,
+            "snippet": title[:400],
+            "published_at": first_date(title),
+            "company": company,
+            "entry": "rendered",
+        })
     return out
 
 
@@ -111,7 +169,7 @@ def parse_tieba_bar(html: str, company: str) -> list[dict]:
         tail = strip_tags(html[match.end(): match.end() + 300])
         out.append({
             "title": title,
-            "url": f"https://tieba.baidu.com{href}",
+            "url": _absolute(href),
             "snippet": tail or title,
             "published_at": first_date(match.group(0) + tail),
             "company": company,

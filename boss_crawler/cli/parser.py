@@ -208,6 +208,8 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--disable", action="store_true", help="agent-set：停用")
     app_cmd.add_argument("--model", default=None,
                          help="agent-set：按能力指定模型，如 chat=chat.doubao（可多次用逗号分隔）")
+    app_cmd.add_argument("--model-default", default=None,
+                         help="agent-set：把指定能力改回跟随默认，如 chat,embedding")
     app_cmd.add_argument("--option", default=None,
                          help="agent-set：透传选项，如 key=value（逗号分隔）")
     # 模型配置
@@ -216,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--model-id", default=None, help="model-set：供应商侧模型 id")
     app_cmd.add_argument("--dimension", type=int, default=None, help="model-set：向量维度")
     app_cmd.add_argument("--resume", default=None, help="简历 JSON 文件路径")
-    app_cmd.add_argument("--state", default=".state/login", help="登录态目录")
+    app_cmd.add_argument("--state", default=str(config.STATE_DIR / "login"), help="登录态目录")
     app_cmd.add_argument("--timeout", type=float, default=300.0, help="登录等待秒数")
     app_cmd.add_argument("--no-browser", action="store_true", help="禁止浏览器兜底")
     app_cmd.add_argument("--json", action="store_true", help="以 JSON 输出（前端用）")

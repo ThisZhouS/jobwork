@@ -106,7 +106,11 @@ class AppStore:
         *,
         run_id: int | None = None,
     ) -> int:
-        """写证据。同一 (agent, url|标题) 只留最新一条，返回写入行数。"""
+        """写某公司某 agent 的证据：本次结果为准，先清掉该 agent 的旧证据。
+
+        不这样做的话，上一次运行里已经判为无关、但本次被过滤掉的行会一直留在库里，
+        继续参与打分——agent 的相关性判断就白做了。
+        """
         rows = []
         for finding in findings:
             payload = getattr(finding, "meta", None) or {}
@@ -138,6 +142,7 @@ class AppStore:
                  published_at, author, sentiment, weight, payload, dedupe_key)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (dedupe_key) DO UPDATE SET
+                run_id = EXCLUDED.run_id,
                 snippet = EXCLUDED.snippet,
                 sentiment = EXCLUDED.sentiment,
                 weight = EXCLUDED.weight,
@@ -145,9 +150,61 @@ class AppStore:
                 fetched_at = now()
         """
         with self.db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM backduty_evidence WHERE company_key = %s AND agent = %s",
+                (company_key, agent),
+            )
             cur.executemany(sql, rows)
         self.db.commit()
         return len(rows)
+
+    def clear_evidence(self, company_key: str, agent: str) -> int:
+        """清掉某公司某 agent 的旧证据（本次明确查无结果时用）。"""
+        with self.db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM backduty_evidence WHERE company_key = %s AND agent = %s",
+                (company_key, agent),
+            )
+            deleted = cur.rowcount
+        self.db.commit()
+        return int(deleted or 0)
+
+    def save_agent_summary(self, company_key: str, agent: str, summary: dict, *,
+                           run_id: int | None = None,
+                           evidence_count: int | None = None) -> None:
+        """保存 AI agent 对证据的结构化摘要（每公司每 agent 保留最新一份）。"""
+        with self.db.cursor() as cur:
+            cur.execute(
+                """INSERT INTO backduty_summary
+                       (company_key, agent, run_id, summary, evidence_count)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (company_key, agent) DO UPDATE SET
+                       run_id = EXCLUDED.run_id,
+                       summary = EXCLUDED.summary,
+                       evidence_count = EXCLUDED.evidence_count,
+                       created_at = now()""",
+                (company_key, agent, run_id, _json(summary), evidence_count),
+            )
+        self.db.commit()
+
+    def clear_agent_summary(self, company_key: str, agent: str) -> int:
+        with self.db.cursor() as cur:
+            cur.execute(
+                "DELETE FROM backduty_summary WHERE company_key = %s AND agent = %s",
+                (company_key, agent),
+            )
+            deleted = cur.rowcount
+        self.db.commit()
+        return int(deleted or 0)
+
+    def agent_summaries(self, company_key: str) -> list[dict]:
+        with self.db.cursor() as cur:
+            cur.execute(
+                """SELECT agent, run_id, summary, evidence_count, created_at
+                   FROM backduty_summary WHERE company_key = %s ORDER BY agent""",
+                (company_key,),
+            )
+            return [_dumps_row(row) for row in cur.fetchall()]
 
     def evidence_for(self, company_key: str, *, limit: int | None = None) -> list[dict]:
         sql = ("SELECT agent, source, title, url, snippet, published_at, author, "

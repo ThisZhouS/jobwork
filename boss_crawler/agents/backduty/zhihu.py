@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 from ..registry import register
-from ..toolagent import ToolAgent, ToolCall
+from ..toolagent import ToolCall
+from .relevance import AiSocialAgent
 
 
-class ZhihuAgent(ToolAgent):
+class ZhihuAgent(AiSocialAgent):
     name = "zhihu"
     site = "知乎"
     description = "调 zhihu_search 工具，汇总知乎上关于该公司的讨论（需登录）"

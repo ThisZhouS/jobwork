@@ -40,6 +40,12 @@ class ResumeTailorAgent(Agent):
     mandatory_tools: tuple[str, ...] = ("log_event", "ask_user")
     log_tool = "log_event"
 
+    def describe(self) -> dict[str, Any]:
+        info = super().describe()
+        info["tools"] = []
+        info["mandatory_tools"] = list(self.mandatory_tools)
+        return info
+
     async def run(self, request: AgentRequest, ctx: AgentContext) -> AgentResult:
         resume = dict(getattr(request, "resume", None) or {})
         if not resume:
@@ -98,6 +104,7 @@ class ResumeTailorAgent(Agent):
             return None
         prompt = (
             "下面是一段求职简历概述草稿。请只做措辞润色，"
+            "必须保留草稿中的年限、技能和目标岗位，不得删减信息点；"
             "不得新增任何事实、数字或经历；保持一段话，不超过 120 字。\n"
             f"目标岗位：{job.get('title') or '未指定'}\n草稿：{base}"
         )
@@ -109,14 +116,18 @@ class ResumeTailorAgent(Agent):
     # ------------------------------------------------------------ 改写
     def rewrite(self, resume: dict, job: dict, answers: list[dict]) -> dict:
         """规则化定向：重排条目、挑技能、生成概述。不新增任何事实。"""
-        from .scoring.rubric import normalize_skills
+        from .scoring.rubric import as_text, normalize_skills
 
+        skills = list(resume.get("skills") or [])
+        # JD 的结构化 skills 可能为空，所以再拿简历技能去 JD 正文里做命中，
+        # 这样概述和项目排序仍然有依据，而不是只写一句"2 年经验"。
+        jd_text = as_text(job).lower()
         wanted = set(normalize_skills(job.get("skills"))) | set(
             normalize_skills(job.get("title")))
+        wanted |= {s for s in normalize_skills(skills) if s and s in jd_text}
         out = dict(resume)
 
         # 技能：把命中的排前面，其余保持原顺序
-        skills = list(resume.get("skills") or [])
         if skills and wanted:
             out["skills"] = sorted(
                 skills,
@@ -128,18 +139,25 @@ class ResumeTailorAgent(Agent):
         items = list(resume.get("experience") or resume.get("projects") or [])
         if items and wanted:
             def hits(entry: Any) -> int:
-                text = str(entry.get("description") or entry) if isinstance(entry, dict) else str(entry)
-                return sum(1 for word in wanted if word and word in text)
+                if isinstance(entry, dict):
+                    text = as_text({key: entry.get(key) for key in
+                                    ("title", "description", "stack", "highlights")})
+                else:
+                    text = str(entry)
+                return sum(1 for word in wanted if word and word in text.lower())
 
             out["experience" if resume.get("experience") else "projects"] = sorted(
                 items, key=hits, reverse=True)
 
         # 概述：只用已有信息拼，不编造
         pieces: list[str] = []
+        title = str(job.get("title") or "").strip()
+        if title:
+            pieces.append(f"目标岗位：{title}")
         years = resume.get("years") or resume.get("experience_years")
         if years:
             pieces.append(f"{years} 年经验")
-        matched = [s for s in skills if set(normalize_skills(s)) & wanted][:3]
+        matched = [s for s in skills if set(normalize_skills(s)) & wanted][:4]
         if matched:
             pieces.append("熟悉 " + "、".join(matched))
         if answers:

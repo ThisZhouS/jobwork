@@ -34,9 +34,14 @@ def load_env(path: Path | None = None) -> None:
 load_env()
 
 # 运行期状态（登录态、Cookie 快照）— 含敏感信息，不要提交到版本库
-STATE_DIR = ROOT / ".state"
+# 打包成桌面端后由 Electron 指向用户数据目录，避免写只读的 resources。
+STATE_DIR = Path(os.environ.get("BOSS_STATE_DIR") or (ROOT / ".state"))
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_DIR = STATE_DIR / "chrome-profile"
 STORAGE_STATE = STATE_DIR / "storage_state.json"
+
+# 声明式配置目录；打包后复制到用户目录，允许设置页写回。
+CONFIG_DIR = Path(os.environ.get("BOSS_CONFIG_DIR") or (ROOT / "config"))
 
 OUTPUT_DIR = ROOT / "output"
 STEALTH_JS = Path(__file__).with_name("stealth.js")
@@ -123,6 +128,14 @@ ARK_MODEL = os.environ.get("ARK_MODEL", "doubao-embedding-vision-250328")
 ARK_KEY_FILE = STATE_DIR / "ark_key.txt"
 ARK_BATCH_SIZE = int(os.environ.get("ARK_BATCH_SIZE", "10"))
 EMBED_MAX_CHARS = int(os.environ.get("EMBED_MAX_CHARS", "1500"))
+
+# ----------------------------------------------------------------- DeepSeek（OpenAI 兼容）
+# 密钥放在 .state/deepseek_key.txt 或环境变量 DEEPSEEK_API_KEY，不要写进代码。
+# Anthropic 兼容端点 https://api.deepseek.com/anthropic 当前未被使用；
+# 项目里的模型客户端统一走 OpenAI 风格的 /chat/completions。
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_KEY_FILE = STATE_DIR / "deepseek_key.txt"
 
 # ----------------------------------------------------------------- PostgreSQL
 PG_HOST = os.environ.get("PGHOST", "127.0.0.1")

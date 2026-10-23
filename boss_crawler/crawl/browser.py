@@ -25,7 +25,7 @@ from .. import config
 @lru_cache(maxsize=1)
 def stealth_source() -> str:
     """stealth.js 的源码；只读一次。"""
-    return config.STEALTH_JS.read_text(encoding="utr-8")
+    return config.STEALTH_JS.read_text(encoding="utf-8")
 
 
 class LoginRequired(RuntimeError):

@@ -23,7 +23,7 @@ from ..base import Tool, ToolBox, ToolResult, register_tool
 class AliyunRiskTool(Tool):
     name = "aliyun_risk"
     site = "阿里云云市场"
-    description = "调云市场风险接口（司法涉诉/工商），配置化适配、AppCode 认证、按次计费"
+    description = "调云市场工商/风险接口（配置化适配、AppCode 认证、按次计费）"
     params = ("company",)
     requires = ("http",)
 
@@ -66,11 +66,23 @@ class AliyunRiskTool(Tool):
         http = await box.http()
         url = market.build_url(conf, name)
         headers = {"Authorization": f"APPCODE {code}", "Accept": "application/json"}
+        method = (conf.method or "GET").upper()
 
         try:
-            raw = await http.get(url, headers=headers)
+            if method == "POST":
+                headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+                raw = await http.post(url, headers=headers,
+                                      data=market.build_body(conf, name))
+            else:
+                raw = await http.get(url, headers=headers)
         except Exception as exc:  # noqa: BLE001 - 网络/权限问题统一降级
-            return ToolResult.failed(self.name, f"云市场接口请求失败：{exc}")
+            detail = str(exc)
+            if "401" in detail or "403" in detail:
+                return ToolResult.blocked(
+                    self.name,
+                    "云市场认证失败（401/403）：请确认 .state/aliyun_appcode.txt "
+                    "里填的是控制台的 AppCode，而不是 AppKey")
+            return ToolResult.failed(self.name, f"云市场接口请求失败：{detail}")
 
         import json
 
@@ -80,21 +92,33 @@ class AliyunRiskTool(Tool):
             return ToolResult.failed(self.name, "云市场接口返回的不是 JSON")
 
         rows = market.normalize(payload, conf)
+        total = len(rows)
         if not rows:
             # 查不到 ≠ 安全：明确说"接口没返回可解析的行"
             return ToolResult.empty(
                 self.name,
-                notes=[f"{conf.name} 接口没有返回可解析的风险行（公司名可能不匹配，或该源无此公司）"],
+                notes=[f"{conf.name} 接口没有返回可解析的数据行（公司名可能不匹配，或该源无此公司）"],
                 url=url, meta={"calls": self._calls})
 
+        picked = False
+        if conf.profile_fields and total > 1:
+            best = market.best_match(rows, name)
+            if best is not None:
+                rows = [best]
+                picked = True
+
+        note = f"{conf.name} 返回 {total} 条"
+        if picked:
+            note += "，已选最佳匹配"
         return ToolResult(
             tool=self.name,
             status=AgentStatus.OK,
             data=rows,                       # ToolAgent 按行列表消费
-            notes=[f"{conf.name} 返回 {len(rows)} 条"],
+            notes=[note],
             url=url,
             meta={"calls": self._calls, "budget": conf.budget,
-                  "profile": conf.name, "counts": {"rows": len(rows)},
+                  "profile": conf.name, "method": method,
+                  "counts": {"rows": len(rows), "returned": total},
                   "raw": payload})
 
 
