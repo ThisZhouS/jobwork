@@ -30,4 +30,5 @@ __pycache__/
 # 桌面端依赖与构建产物
 desktop/node_modules/
 desktop/dist/
+desktop/dist*/
 desktop/out/

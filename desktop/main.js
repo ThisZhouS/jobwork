@@ -5,13 +5,39 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const ROOT = path.resolve(__dirname, "..");
+const ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "backend")
+  : path.resolve(__dirname, "..");
+const STATE_ROOT = app.isPackaged
+  ? path.join(app.getPath("userData"), ".state")
+  : path.join(ROOT, ".state");
+const CONFIG_ROOT = app.isPackaged
+  ? path.join(app.getPath("userData"), "config")
+  : path.join(ROOT, "config");
 const PY = process.env.PYTHON || "python";
+
+// 首次运行时把只读的默认配置复制到用户目录；之后设置页可以正常写回。
+function ensureConfig() {
+  fs.mkdirSync(STATE_ROOT, { recursive: true });
+  fs.mkdirSync(CONFIG_ROOT, { recursive: true });
+  const source = path.join(ROOT, "config");
+  if (!fs.existsSync(source)) return;
+  for (const name of fs.readdirSync(source)) {
+    const target = path.join(CONFIG_ROOT, name);
+    if (!fs.existsSync(target)) {
+      fs.cpSync(path.join(source, name), target, { recursive: true });
+    }
+  }
+}
+ensureConfig();
+
 const ENV = {
   ...process.env,
   PYTHONPATH: ROOT,
   PYTHONIOENCODING: "utf-8",
   PYTHONUTF8: "1",
+  BOSS_STATE_DIR: STATE_ROOT,
+  BOSS_CONFIG_DIR: CONFIG_ROOT,
 };
 
 let win = null;
@@ -128,7 +154,7 @@ ipcMain.handle("app:open-external", (_e, url) => {
 
 // 把渲染进程要传的 JSON 写到临时文件，避免命令行长度/转义问题
 ipcMain.handle("app:write-temp", (_e, name, content) => {
-  const dir = path.join(ROOT, ".state", "tmp");
+  const dir = path.join(STATE_ROOT, "tmp");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, name);
   fs.writeFileSync(file, content, "utf8");
