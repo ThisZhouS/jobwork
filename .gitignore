@@ -29,6 +29,7 @@ __pycache__/
 .coverage
 .venv/
 *.egg-info/
+pytest.xml
 # Qoder 本地检索索引与 repowiki 缓存
 .qoder/
 

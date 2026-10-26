@@ -23,4 +23,11 @@ jobs:
       - run: uv run python tools/check_secrets.py
       - run: uv run ruff check .
       - run: uv run mypy
-      - run: uv run pytest -q --cov --cov-report=term-missing
+      - name: test
+        id: test
+        run: |
+          set -o pipefail
+          uv run pytest -q --cov --cov-report=term-missing --junitxml=pytest.xml 2>&1 | tee pytest.log
+      - name: annotate test failures
+        if: steps.test.outcome == 'failure'
+        run: uv run python tools/ci_annotate.py pytest.xml pytest.log
