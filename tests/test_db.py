@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from boss_crawler import config
@@ -12,9 +14,15 @@ class PasswordTests(unittest.TestCase):
             self.assertEqual(resolve_password(), "secret")
 
     def test_file_fallback(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(resolve_password(), config.PG_PASSWORD_FILE.read_text(
-                encoding="utf-8").strip())
+        handle, name = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write("from-file\n")
+        try:
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch.object(config, "PG_PASSWORD_FILE", Path(name)):
+                self.assertEqual(resolve_password(), "from-file")
+        finally:
+            Path(name).unlink(missing_ok=True)
 
     def test_missing_password_raises(self):
         with mock.patch.dict(os.environ, {}, clear=True), \

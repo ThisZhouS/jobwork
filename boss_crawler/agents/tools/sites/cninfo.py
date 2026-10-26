@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ....agents.base import AgentStatus
@@ -26,6 +27,9 @@ from ..parsing import normalize_date, strip_tags
 
 _QUERY_URL = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
 _NOTICE_URL = "http://static.cninfo.com.cn/{path}"
+
+#: 巨潮公告时间戳是北京时间；CI 跑在 UTC，必须显式换算，不能依赖运行机器的时区。
+_CST = timezone(timedelta(hours=8))
 
 #: 标题关键词 -> 风险类型。顺序有意义：先匹配到的先用（越靠前越严重）
 RISK_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -65,9 +69,7 @@ def to_date(stamp: Any) -> str | None:
     # 13 位毫秒时间戳
     if text.isdigit() and len(text) >= 12:
         try:
-            from datetime import datetime
-
-            return datetime.fromtimestamp(int(text) / 1000).strftime("%Y-%m-%d")
+            return datetime.fromtimestamp(int(text) / 1000, _CST).strftime("%Y-%m-%d")
         except (ValueError, OSError, OverflowError):
             return None
     return normalize_date(text)

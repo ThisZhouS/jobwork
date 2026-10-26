@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -340,22 +341,27 @@ def _fake_exec(code: int, out: str = "", err: str = ""):
     return runner
 
 
+def _fake_cli(**kwargs) -> TycCli:
+    # 解析仍会检查可执行文件；用当前解释器占位，实际执行由注入的 exec 接管。
+    return TycCli(command=sys.executable, **kwargs)
+
+
 def test_tyc_cli_anchor_parses_items():
     payload = {"data": {"items": [{"id": 1, "name": "茶百道", "creditCode": "91"}]}}
-    cli = TycCli(exec=_fake_exec(0, json.dumps(payload)))
+    cli = _fake_cli(exec=_fake_exec(0, json.dumps(payload)))
     assert cli.anchor("茶百道")[0]["name"] == "茶百道"
 
 
 def test_tyc_cli_passes_compact_flag():
     runner = _fake_exec(0, '{"ok":1}')
-    cli = TycCli(exec=runner)
+    cli = _fake_cli(exec=runner)
     cli.call("company registration-info", "x")
     assert "--compact" in runner.calls[0]
     assert runner.calls[0][1:3] == ["company", "registration-info"]
 
 
 def test_tyc_cli_detects_unauthed():
-    cli = TycCli(exec=_fake_exec(1, "", "请求失败: 未配置 Authorization。请先运行：tyc init --authorization KEY"))
+    cli = _fake_cli(exec=_fake_exec(1, "", "请求失败: 未配置 Authorization。请先运行：tyc init --authorization KEY"))
     with pytest.raises(TycCliError) as exc:
         cli.anchor("x")
     assert exc.value.kind == "not_authed"
@@ -363,7 +369,7 @@ def test_tyc_cli_detects_unauthed():
 
 
 def test_tyc_cli_generic_error_is_not_login():
-    cli = TycCli(exec=_fake_exec(2, "", "network unreachable"))
+    cli = _fake_cli(exec=_fake_exec(2, "", "network unreachable"))
     with pytest.raises(TycCliError) as exc:
         cli.anchor("x")
     assert exc.value.kind == "cli_error"
@@ -374,7 +380,7 @@ def test_tyc_cli_timeout_becomes_error():
     def boom(args, timeout):
         raise TimeoutError("too slow")
 
-    cli = TycCli(exec=boom)
+    cli = _fake_cli(exec=boom)
     with pytest.raises(TycCliError) as exc:
         cli.anchor("x")
     assert exc.value.kind == "timeout"
@@ -387,7 +393,7 @@ def test_tyc_cli_basic_bundle_isolates_failures():
             return 0, '{"data":{"name":"X"}}', ""
         return 1, "", "boom"
 
-    bundle = TycCli(exec=runner).basic_bundle("X")
+    bundle = _fake_cli(exec=runner).basic_bundle("X")
     assert bundle["registration"]["name"] == "X"
     assert "risk" in bundle["errors"]
 
