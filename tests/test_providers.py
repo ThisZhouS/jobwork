@@ -1,7 +1,6 @@
 """天眼查背调的离线测试：全部基于录制的返回样例，不联网、不花接口费。"""
 from __future__ import annotations
 
-import json
 
 import pytest
 

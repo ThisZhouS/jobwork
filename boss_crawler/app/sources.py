@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 Emit = Callable[[dict], Any]
@@ -91,6 +91,8 @@ def _boss_steps(filters: dict[str, Any]) -> list[list[str]]:
         crawl += ["--experience", str(filters["experience"])]
     if filters.get("degree"):
         crawl += ["--degree", str(filters["degree"])]
+    if filters.get("industry"):
+        crawl += ["--industry", str(filters["industry"])]
     if filters.get("take"):
         crawl += ["--take", str(filters["take"])]
     if filters.get("detail", True):

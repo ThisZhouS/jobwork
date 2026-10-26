@@ -26,6 +26,11 @@ __pycache__/
 # 测试与工具缓存
 .pytest_cache/
 .ruff_cache/
+.coverage
+.venv/
+*.egg-info/
+# Qoder 本地检索索引与 repowiki 缓存
+.qoder/
 
 # 桌面端依赖与构建产物
 desktop/node_modules/

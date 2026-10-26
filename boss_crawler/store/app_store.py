@@ -4,7 +4,7 @@
 
 * ``postgres.py`` 管**采集层**（jobs / companies / tyc_*），逻辑已经很密，
   不去动它，避免把 173 条老测试搅乱；
-* 本模块管**应用层**（db/schema_app.sql 里那批表），给前端和流水线用。
+* 本模块管**应用层**（``store/schema_app.sql`` 里那批表），给前端和流水线用。
 
 设计上大量用 ``jsonb``：证据的形态会变（不同站点字段不同），
 先按"结构化但不固定列"存，等口径稳定了再抽列。
@@ -16,7 +16,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_FILE = Path(__file__).resolve().parents[2] / "db" / "schema_app.sql"
+# 放在包内，wheel 安装后也能找到；仓库根 db/ 不再是运行期依赖。
+SCHEMA_FILE = Path(__file__).with_name("schema_app.sql")
 
 
 def _json(value: Any) -> str:
@@ -37,16 +38,29 @@ def _dumps_row(row: Any) -> Any:
     return row
 
 
-def dedupe_key(agent: str, *, url: str = "", title: str = "", published_at: str = "") -> str:
+def dedupe_key(
+    agent: str,
+    *,
+    company_key: str = "",
+    url: str = "",
+    title: str = "",
+    published_at: str = "",
+    snippet: str = "",
+) -> str:
     """证据去重键。
 
-    优先级：URL > 标题+日期。两者都空时用内容指纹，
-    但调用方应尽量给 URL——没 URL 的条目很难判重。
+    必须带 ``company_key``：同一篇报道可能同时提到多家公司，但它是各家
+    各自的证据，不能因为 URL 相同就互相覆盖。
+
+    内容指纹优先级：URL > 标题+日期 > 摘要正文。都为空时同一公司同一
+    agent 只保留一条占位记录。
     """
     seed = url.strip() or f"{title.strip()}|{published_at.strip()}"
-    if not seed or seed == "|":
+    if not seed.strip("|"):
+        seed = snippet.strip()
+    if not seed:
         seed = f"{agent}|unknown"
-    return hashlib.md5(f"{agent}|{seed}".encode("utf-8")).hexdigest()
+    return hashlib.md5(f"{company_key}|{agent}|{seed}".encode("utf-8")).hexdigest()
 
 
 class AppStore:
@@ -57,10 +71,13 @@ class AppStore:
 
     # ------------------------------------------------------------------ 建表
     def init_schema(self, path: Path | None = None) -> dict:
-        sql = (path or SCHEMA_FILE).read_text(encoding="utf-8")
-        with self.db.cursor() as cur:
-            cur.execute(sql)
-        self.db.commit()
+        if path is None:
+            # 基线脚本版本化为 app/001；后续增量迁移在 store/migrations/ 里登记。
+            self.db.apply_migrations([("app/001", SCHEMA_FILE.read_text(encoding="utf-8"))])
+        else:
+            with self.db.cursor() as cur:
+                cur.execute(path.read_text(encoding="utf-8"))
+            self.db.commit()
         return {"ok": True, "tables": self.table_names()}
 
     def table_names(self) -> list[str]:
@@ -117,7 +134,10 @@ class AppStore:
             url = str(getattr(finding, "url", "") or "")
             title = str(getattr(finding, "title", "") or "")
             published = getattr(finding, "published_at", None)
-            published_str = published.isoformat() if hasattr(published, "isoformat") else (published or "")
+            if published:
+                published_str = published.isoformat() if hasattr(published, "isoformat") else str(published)
+            else:
+                published_str = ""
             rows.append((
                 company_key,
                 run_id,
@@ -131,7 +151,14 @@ class AppStore:
                 getattr(finding, "sentiment", None),
                 getattr(finding, "weight", None),
                 _json(payload),
-                dedupe_key(agent, url=url, title=title, published_at=str(published_str)),
+                dedupe_key(
+                    agent,
+                    company_key=company_key,
+                    url=url,
+                    title=title,
+                    published_at=str(published_str),
+                    snippet=str(getattr(finding, "snippet", "") or ""),
+                ),
             ))
         if not rows:
             return 0
@@ -141,7 +168,7 @@ class AppStore:
                 (company_key, run_id, agent, source, title, url, snippet,
                  published_at, author, sentiment, weight, payload, dedupe_key)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (dedupe_key) DO UPDATE SET
+            ON CONFLICT (company_key, dedupe_key) DO UPDATE SET
                 run_id = EXCLUDED.run_id,
                 snippet = EXCLUDED.snippet,
                 sentiment = EXCLUDED.sentiment,
@@ -149,13 +176,13 @@ class AppStore:
                 payload = EXCLUDED.payload,
                 fetched_at = now()
         """
-        with self.db.cursor() as cur:
-            cur.execute(
-                "DELETE FROM backduty_evidence WHERE company_key = %s AND agent = %s",
-                (company_key, agent),
-            )
-            cur.executemany(sql, rows)
-        self.db.commit()
+        with self.db.transaction():
+            with self.db.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM backduty_evidence WHERE company_key = %s AND agent = %s",
+                    (company_key, agent),
+                )
+                cur.executemany(sql, rows)
         return len(rows)
 
     def clear_evidence(self, company_key: str, agent: str) -> int:
@@ -218,6 +245,15 @@ class AppStore:
             cur.execute(sql, params)
             return [_dumps_row(row) for row in cur.fetchall()]
 
+    @staticmethod
+    def _summary_of(row: dict) -> dict:
+        return {
+            "total": int(row.get("total") or 0),
+            "negative": int(row.get("negative") or 0),
+            "positive": int(row.get("positive") or 0),
+            "sources": [s for s in (row.get("sources") or []) if s],
+        }
+
     def evidence_summary(self, company_key: str) -> dict:
         with self.db.cursor() as cur:
             cur.execute(
@@ -228,14 +264,27 @@ class AppStore:
                    FROM backduty_evidence WHERE company_key = %s""",
                 (company_key,),
             )
-            row = cur.fetchone()
-        total = int(row["total"] or 0)
-        return {
-            "total": total,
-            "negative": int(row["negative"] or 0),
-            "positive": int(row["positive"] or 0),
-            "sources": [s for s in (row["sources"] or []) if s],
-        }
+            row = cur.fetchone() or {}
+        return self._summary_of(row)
+
+    def evidence_summaries(self, company_keys: Sequence[str]) -> dict[str, dict]:
+        """批量版 ``evidence_summary``，供列表页避免 N+1 查询。"""
+        keys = list(dict.fromkeys(str(k) for k in company_keys if k))
+        if not keys:
+            return {}
+        with self.db.cursor() as cur:
+            cur.execute(
+                """SELECT company_key, count(*) AS total,
+                          count(*) FILTER (WHERE sentiment < 0) AS negative,
+                          count(*) FILTER (WHERE sentiment > 0) AS positive,
+                          array_agg(DISTINCT agent) AS sources
+                   FROM backduty_evidence
+                   WHERE company_key = ANY(%s)
+                   GROUP BY company_key""",
+                (keys,),
+            )
+            rows = cur.fetchall()
+        return {row["company_key"]: self._summary_of(row) for row in rows}
 
     # ------------------------------------------------------------------ 原数据
     def save_raw(self, company_key: str, agent: str, payload: Any, *,
@@ -296,24 +345,55 @@ class AppStore:
         """每家公司只取最新一份。"""
         with self.db.cursor() as cur:
             cur.execute(
-                """SELECT DISTINCT ON (company_key)
-                          company_key, total, grade, verdict, dimensions, advice, notes,
-                          is_labor_dispatch, labor_dispatch_reason,
-                          labor_dispatch_evidence, created_at
-                   FROM company_score
-                   ORDER BY company_key, created_at DESC
+                """SELECT * FROM (
+                       SELECT DISTINCT ON (company_key)
+                              company_key, total, grade, verdict, dimensions, advice, notes,
+                              is_labor_dispatch, labor_dispatch_reason,
+                              labor_dispatch_evidence, created_at
+                       FROM company_score
+                       ORDER BY company_key, created_at DESC
+                   ) latest
+                   ORDER BY created_at DESC
                    LIMIT %s""",
                 (limit,),
             )
             return [_dumps_row(row) for row in cur.fetchall()]
 
+    def latest_company_score(self, company_key: str) -> dict | None:
+        """单家公司的评分详情，供详情页精确查询（不受列表 limit 影响）。"""
+        with self.db.cursor() as cur:
+            cur.execute(
+                """SELECT company_key, total, grade, verdict, dimensions, advice, notes,
+                          is_labor_dispatch, labor_dispatch_reason,
+                          labor_dispatch_evidence, created_at
+                   FROM company_score WHERE company_key = %s
+                   ORDER BY created_at DESC LIMIT 1""",
+                (company_key,),
+            )
+            row = cur.fetchone()
+        return _dumps_row(row) if row else None
+
+    def latest_job_fit(self, job_id: str) -> dict | None:
+        with self.db.cursor() as cur:
+            cur.execute(
+                """SELECT job_id, resume_id, total, grade, verdict, dimensions, advice, created_at
+                   FROM job_fit WHERE job_id = %s
+                   ORDER BY created_at DESC LIMIT 1""",
+                (job_id,),
+            )
+            row = cur.fetchone()
+        return _dumps_row(row) if row else None
+
     def company_score_series(self, company_key: str, *, limit: int = 60) -> list[dict]:
         """一家公司的打分历史——前端"点字段看折线图"用。"""
         with self.db.cursor() as cur:
             cur.execute(
-                """SELECT created_at, total, grade, dimensions
-                   FROM company_score WHERE company_key = %s
-                   ORDER BY created_at ASC LIMIT %s""",
+                """SELECT * FROM (
+                       SELECT created_at, total, grade, dimensions
+                       FROM company_score WHERE company_key = %s
+                       ORDER BY created_at DESC LIMIT %s
+                   ) recent
+                   ORDER BY created_at ASC""",
                 (company_key, limit),
             )
             rows = [_dumps_row(row) for row in cur.fetchall()]
@@ -351,9 +431,14 @@ class AppStore:
     def latest_job_fits(self, *, limit: int = 200) -> list[dict]:
         with self.db.cursor() as cur:
             cur.execute(
-                """SELECT DISTINCT ON (job_id)
-                          job_id, resume_id, total, grade, verdict, dimensions, advice, created_at
-                   FROM job_fit ORDER BY job_id, created_at DESC LIMIT %s""",
+                """SELECT * FROM (
+                       SELECT DISTINCT ON (job_id)
+                              job_id, resume_id, total, grade, verdict, dimensions,
+                              advice, created_at
+                       FROM job_fit ORDER BY job_id, created_at DESC
+                   ) latest
+                   ORDER BY created_at DESC
+                   LIMIT %s""",
                 (limit,),
             )
             return [_dumps_row(row) for row in cur.fetchall()]
@@ -387,6 +472,41 @@ class AppStore:
             cur.execute(sql)
             row = cur.fetchone()
         return _dumps_row(row) if row else None
+
+    def resume_version(self, resume_id: int) -> dict | None:
+        with self.db.cursor() as cur:
+            cur.execute("SELECT * FROM resume_version WHERE id = %s", (resume_id,))
+            row = cur.fetchone()
+        return _dumps_row(row) if row else None
+
+    def resume_versions(self, *, limit: int = 12) -> list[dict]:
+        """版本列表只取元数据；正文由 ``resume_version`` 按需读取。"""
+        with self.db.cursor() as cur:
+            cur.execute(
+                """SELECT id, name, job_id, parent_id, confirmed, created_at,
+                          content->>'target' AS target,
+                          CASE WHEN jsonb_typeof(content->'skills') = 'array'
+                               THEN jsonb_array_length(content->'skills') ELSE 0 END AS skill_count,
+                          CASE WHEN jsonb_typeof(questions) = 'array'
+                               THEN jsonb_array_length(questions) ELSE 0 END AS question_count,
+                          CASE WHEN jsonb_typeof(answers) = 'array'
+                               THEN jsonb_array_length(answers) ELSE 0 END AS answer_count
+                   FROM resume_version
+                   ORDER BY created_at DESC
+                   LIMIT %s""",
+                (limit,),
+            )
+            return [_dumps_row(row) for row in cur.fetchall()]
+
+    def confirm_resume(self, resume_id: int) -> bool:
+        with self.db.cursor() as cur:
+            cur.execute(
+                "UPDATE resume_version SET confirmed = TRUE WHERE id = %s",
+                (resume_id,),
+            )
+            updated = cur.rowcount
+        self.db.commit()
+        return bool(updated)
 
     # ------------------------------------------------------------------ 日志
     def log_event(self, *, agent: str, message: str, level: str = "error",
@@ -485,7 +605,7 @@ class AppStore:
             "welfare": welfare,
         }
 
-    def company_targets(self, *, limit: int = 50, include_anonymous: bool = False) -> list[dict]:
+    def company_targets(self, *, limit: int | None = 50, include_anonymous: bool = False) -> list[dict]:
         try:
             return self.db.company_targets(include_anonymous=include_anonymous, limit=limit)
         except Exception:  # noqa: BLE001 - 老库没有该字段时退化
@@ -503,6 +623,8 @@ class AppStore:
         """前端「数据」页签要的一整块。"""
         scores = {row["company_key"]: row for row in self.latest_company_scores(limit=limit)}
         fits = {row["job_id"]: row for row in self.latest_job_fits(limit=limit)}
+        active_resume = self.latest_resume(confirmed_only=True)
+        active_resume_id = active_resume["id"] if active_resume else None
 
         with self.db.cursor() as cur:
             cur.execute(
@@ -513,6 +635,7 @@ class AppStore:
             )
             companies = [_dumps_row(row) for row in cur.fetchall()]
 
+        summaries = self.evidence_summaries([row["company_key"] for row in companies])
         company_rows = []
         for row in companies:
             key = row["company_key"]
@@ -530,7 +653,7 @@ class AppStore:
                     "is_labor_dispatch": score.get("is_labor_dispatch"),
                     "labor_dispatch_reason": score.get("labor_dispatch_reason"),
                 },
-                "evidence": self.evidence_summary(key),
+                "evidence": summaries.get(key, self._summary_of({})),
             })
 
         jobs = self.jobs_for_fit(limit=limit)
@@ -548,6 +671,10 @@ class AppStore:
                     "total": fit["total"], "grade": fit["grade"],
                     "dimensions": {d["name"]: d["score"] for d in (fit["dimensions"] or [])},
                     "advice": fit["advice"], "verdict": fit["verdict"],
+                    "resume_id": fit.get("resume_id"),
+                    "resume_state": "unknown" if not fit.get("resume_id")
+                    else ("current" if fit["resume_id"] == active_resume_id else "stale"),
+                    "at": fit.get("created_at"),
                 },
             })
         return {"companies": company_rows, "jobs": job_rows}
@@ -561,5 +688,7 @@ class AppStore:
                     cur.execute(f"SELECT count(*) AS n FROM {table}")   # noqa: S608 - 表名来自常量
                     out[table] = int(cur.fetchone()["n"])
                 except Exception:  # noqa: BLE001 - 表可能还没建
+                    # 连接已进入失败事务，必须回滚，否则后续表全部查不了
+                    self.db.rollback()
                     out[table] = None
         return out

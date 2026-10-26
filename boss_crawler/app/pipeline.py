@@ -21,12 +21,13 @@
 """
 from __future__ import annotations
 
-import time
+import asyncio
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
-from ..agents import AgentContext, AgentRequest, Finding, get
+from ..agents import AgentContext, AgentRequest, AgentStatus, Finding, get
+from ..agents.fetch import HttpFetcher, StealthBrowser
 from .. import config
 from ..store.app_store import AppStore
 from . import sources
@@ -82,7 +83,7 @@ def queue_options(options: Options) -> dict:
     return {
         "workers": max(1, int(options.concurrency)),
         "timeout": float(options.task_timeout),
-        "max_attempts": max(1, int(options.retries)),
+        "retry": RetryPolicy(max_attempts=max(1, int(options.retries))),
     }
 
 
@@ -96,6 +97,20 @@ class Pipeline:
         self.emit = emit or (lambda event: None)
         self.ctx = ctx or AgentContext()
         self.summary: dict[str, Any] = {}
+        # 浏览器按平台登录态目录复用：同一平台只开一个 profile，
+        # 避免并发任务抢同一个 Chromium user_data_dir。
+        self._browsers: dict[str, StealthBrowser] = {}
+        self._browser_lock = asyncio.Lock()
+
+    async def _browser_for(self, state_path: str) -> Any:
+        if self.ctx.browser is not None or self.options.no_browser:
+            return self.ctx.browser
+        async with self._browser_lock:
+            browser = self._browsers.get(state_path)
+            if browser is None:
+                browser = StealthBrowser(state_file=state_path)
+                self._browsers[state_path] = browser
+            return browser
 
     # ------------------------------------------------------------------ 入口
     async def run(self) -> dict:
@@ -107,6 +122,12 @@ class Pipeline:
             "no_browser": self.options.no_browser,
             "log_dir": ".state/logs",
         })
+        # 全流水线共享一个 HTTP 客户端：限速按 host 生效，连接也复用。
+        # 每个任务各建一个 fetcher 会让实际 QPS 随并发数倍增。
+        owns_http = self.ctx.http is None
+        if owns_http:
+            self.ctx.http = HttpFetcher(delay=2.0, retries=1)
+
         status = "done"
         try:
             if self.options.enable_crawl:
@@ -124,6 +145,18 @@ class Pipeline:
             self.summary["error"] = f"{type(exc).__name__}: {exc}"
             self.emit({"type": "error", "message": self.summary["error"]})
         finally:
+            if owns_http and isinstance(self.ctx.http, HttpFetcher):
+                await self.ctx.http.close()
+                self.ctx.http = None
+            for browser in self._browsers.values():
+                try:
+                    await browser.close()
+                except Exception:  # noqa: BLE001 - 收尾失败不该盖住主结果
+                    pass
+            self._browsers.clear()
+            if status == "done" and (self.summary.get("failed_tasks")
+                                     or self.summary.get("agent_errors")):
+                status = "partial"
             self.store.finish_run(run_id, status, self.summary)
         self.emit({"type": "done", "ok": status == "done", "run_id": run_id,
                    "summary": self.summary})
@@ -178,12 +211,7 @@ class Pipeline:
 
         counter = {"n": 0}
         total = len(targets)
-        queue = TaskQueue(
-            workers=max(1, int(self.options.concurrency)),
-            timeout=float(self.options.task_timeout),
-            retry=RetryPolicy(max_attempts=max(1, int(self.options.retries))),
-            on_event=self._queue_event,
-        )
+        queue = TaskQueue(**queue_options(self.options), on_event=self._queue_event)
         for platform, agent_name, packed in targets:
             key, name = packed.split("\x00", 1)
             queue.submit(f"{agent_name}:{key}",
@@ -228,9 +256,14 @@ class Pipeline:
         self.summary["companies"] = len(touched)
         self.summary["evidence"] = evidence_total
         self.summary["queue"] = queue.summary()
-        self.emit({"type": "step", "name": "backduty", "status": "done",
+        if queue.stats["failed"]:
+            # 有任务最终失败时整次运行是 partial，不能记成完全成功
+            self.summary["failed_tasks"] = queue.stats["failed"]
+        self.emit({"type": "step", "name": "backduty",
+                   "status": "partial" if queue.stats["failed"] else "done",
                    "detail": f"{len(touched)} 家公司，证据 {evidence_total} 条，"
-                             f"并发 {queue.workers}，重试 {queue.stats['retried']} 次"})
+                             f"并发 {queue.workers}，重试 {queue.stats['retried']} 次，"
+                             f"失败 {queue.stats['failed']} 个"})
 
     def _backduty_task(self, platform: str, agent_name: str, name: str, key: str,
                        counter: dict, total: int):
@@ -239,10 +272,12 @@ class Pipeline:
         async def run_task() -> dict:
             # 登录态是按平台分目录存的（.state/login/zhihu 等），
             # 每个背调任务必须读自己平台的 profile，否则登录了也用不上。
+            # 同一平台的并发任务共享同一个浏览器实例，由实例内锁串行化。
+            state_path = str(Path(self.options.state_root) / platform)
             platform_ctx = replace(
                 self.ctx,
-                options={**self.ctx.options,
-                         "state": str(Path(self.options.state_root) / platform)},
+                browser=await self._browser_for(state_path),
+                options={**self.ctx.options, "state": state_path},
             )
             result = await self._run_agent(agent_name, AgentRequest(
                 company_name=name, company_key=key), ctx=platform_ctx)
@@ -273,6 +308,7 @@ class Pipeline:
     async def stage_company_score(self, run_id: int) -> None:
         companies = self._companies()
         scored = 0
+        skipped = 0
         for company in companies:
             name = str(company.get("company_name") or "")
             key = str(company.get("company_key") or name)
@@ -280,7 +316,9 @@ class Pipeline:
                 continue
             request = self._company_request(key, name)
             result = await self._run_agent("company_score", request)
-            if result is None or result.score is None:
+            if result is None or result.score is None or result.status is not AgentStatus.OK:
+                # 规则未定义或无数据时只是中性 60 分，写入会污染真实评分
+                skipped += 1
                 continue
             self.store.save_company_score(key, result.score, run_id=run_id,
                                           extra=result.meta)
@@ -289,8 +327,12 @@ class Pipeline:
                        "current": scored, "total": len(companies),
                        "message": f"{name} {result.score.total:.1f}"})
         self.summary["scores"] = scored
+        self.summary["scores_skipped"] = skipped
+        detail = f"{scored} 家公司已打分"
+        if skipped:
+            detail += f"，{skipped} 家因规则未定义/无数据跳过"
         self.emit({"type": "step", "name": "company_score", "status": "done",
-                   "detail": f"{scored} 家公司已打分"})
+                   "detail": detail})
 
     async def stage_job_fit(self, run_id: int) -> None:
         resume = self.options.resume or self.store.latest_resume(confirmed_only=True)
@@ -303,11 +345,13 @@ class Pipeline:
         resume_id = resume.get("id") if isinstance(resume, dict) else None
         jobs = self.store.jobs_for_fit(limit=self.options.job_limit)
         fitted = 0
+        skipped = 0
         for index, job in enumerate(jobs, start=1):
             request = AgentRequest(company_name=str(job.get("company_name") or ""),
                                    resume=content or {}, job=job)
             result = await self._run_agent("job_fit", request)
-            if result is None or result.score is None:
+            if result is None or result.score is None or result.status is not AgentStatus.OK:
+                skipped += 1
                 continue
             self.store.save_job_fit(str(job["job_id"]), result.score,
                                     resume_id=resume_id, run_id=run_id)
@@ -315,8 +359,11 @@ class Pipeline:
             self.emit({"type": "progress", "name": "job_fit", "current": index,
                        "total": len(jobs), "message": str(job.get("title") or "")})
         self.summary["fits"] = fitted
+        detail = f"{fitted} 个岗位已算适配度"
+        if skipped:
+            detail += f"，{skipped} 个因规则未定义/无数据跳过"
         self.emit({"type": "step", "name": "job_fit", "status": "done",
-                   "detail": f"{fitted} 个岗位已算适配度"})
+                   "detail": detail})
 
     async def stage_resume(self, run_id: int) -> None:
         resume = self.options.resume or self.store.latest_resume(confirmed_only=True)
@@ -401,6 +448,10 @@ class Pipeline:
         except Exception as exc:  # noqa: BLE001 - 单个 agent 崩了不该中断整条流水线
             self.emit({"type": "error", "agent": name,
                        "message": f"{type(exc).__name__}: {exc}"})
+            if ctx is not None:
+                # 队列任务：交给队列判定重试/失败，别把真实故障伪装成"跳过"
+                raise
+            self.summary["agent_errors"] = self.summary.get("agent_errors", 0) + 1
             return None
 
     def _warn(self, name: str, message: str) -> None:

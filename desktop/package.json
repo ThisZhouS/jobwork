@@ -1,12 +1,14 @@
 {
   "name": "jobs-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "求职背调工作台（Electron 壳，调 boss_crawler app CLI）",
   "author": "ThisZhouS",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/swarm.js",
+    "check": "node --check main.js && node --check preload.js && node --check window-state.js && node --check process-tree.js && node --check renderer/app.js && node --check renderer/swarm.js && node --check renderer/command.js",
+    "test:window": "node --test window-state.test.js",
+    "test:process": "node --test process-tree.test.js",
     "build:win": "electron-builder --win --x64",
     "dist": "electron-builder --win --x64"
   },
@@ -25,6 +27,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "window-state.js",
+      "process-tree.js",
       "renderer/**/*",
       "package.json"
     ],

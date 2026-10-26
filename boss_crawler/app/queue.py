@@ -39,6 +39,10 @@ class RetryPolicy:
     jitter: float = 0.25
     #: 只有这些异常会重试；其余直接算失败（比如参数错误重试也没用）
     retry_on: tuple[type[BaseException], ...] = (Exception,)
+    #: 确定性错误：参数/结构/类型问题，重试只是浪费时间和配额
+    no_retry_on: tuple[type[BaseException], ...] = (
+        ValueError, TypeError, KeyError, AttributeError, NotImplementedError,
+    )
 
     def delay_for(self, attempt: int) -> float:
         raw = self.base_delay * (self.factor ** max(0, attempt - 1))
@@ -47,8 +51,12 @@ class RetryPolicy:
             raw *= 1 + random.uniform(-self.jitter, self.jitter)
         return max(0.0, raw)
 
-    def should_retry(self, exc: BaseException, attempt: int) -> bool:
-        return attempt < self.max_attempts and isinstance(exc, self.retry_on)
+    def should_retry(self, exc: BaseException, attempt: int,
+                     *, max_attempts: int | None = None) -> bool:
+        limit = self.max_attempts if max_attempts is None else max_attempts
+        if attempt >= limit or not isinstance(exc, self.retry_on):
+            return False
+        return not isinstance(exc, self.no_retry_on)
 
 
 @dataclass
@@ -160,9 +168,13 @@ class TaskQueue:
                 now = loop.time()
 
             if self._running:
-                timeout = None
-                if self._heap:
-                    timeout = max(0.0, self._heap[0].ready_at - loop.time())
+                # 内层循环已经把所有能开的任务开满了，这里只剩两种等待：
+                # 1) worker 已满 -> 等任一任务结束腾出槽位，不能用 0 超时轮询；
+                # 2) 还有空位但堆顶未就绪 -> 最多等到它就绪。
+                if len(self._running) >= self.workers or not self._heap:
+                    timeout = None
+                else:
+                    timeout = max(0.001, self._heap[0].ready_at - loop.time())
                 done, _ = await asyncio.wait(
                     self._running, timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED)
@@ -187,12 +199,13 @@ class TaskQueue:
                 value = await item.fn()
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 - 统一判定是否值得重试
+        except Exception as exc:  # noqa: BLE001 - 统一判定是否值得重试
             timed_out = isinstance(exc, asyncio.TimeoutError)
             if timed_out:
                 self.stats["timed_out"] += 1
-            limit = item.max_attempts if item.max_attempts is not None else self.retry.max_attempts
-            retryable = (attempt < limit) and isinstance(exc, self.retry.retry_on)
+                self._emit({"type": "task_timeout", "key": item.key, "attempt": attempt})
+            retryable = self.retry.should_retry(
+                exc, attempt, max_attempts=item.max_attempts)
             if retryable:
                 delay = self.retry.delay_for(attempt)
                 self.stats["retried"] += 1

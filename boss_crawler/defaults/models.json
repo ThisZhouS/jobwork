@@ -1,0 +1,17 @@
+{
+  "_说明": "模型规格的声明式覆盖。改这里就能换模型/停用，不用动代码。密钥永远从环境变量（ARK_API_KEY / DEEPSEEK_API_KEY）或 .state/ 下对应密钥文件读，不要写在这里。",
+  "overrides": {
+    "chat.doubao": {
+      "enabled": false,
+      "_why": "当前 Ark 密钥只有 /embeddings 权限，调用对话会返回 UnsupportedModel。拿到对话权限后把 enabled 改成 true 即可。"
+    },
+    "chat.deepseek": {
+      "enabled": true,
+      "_why": "本次全流程使用的对话模型：deepseek-v4-flash（OpenAI 兼容端点）。"
+    },
+    "embedding.doubao": {
+      "dimension": 2048
+    }
+  },
+  "extra": []
+}

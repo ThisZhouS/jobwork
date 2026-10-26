@@ -12,7 +12,6 @@ from boss_crawler.agents import AgentContext, AgentRequest
 from boss_crawler.agents.models import (
     ModelBox,
     ModelSpec,
-    ModelUnavailable,
     apply_overrides,
     describe_models,
     get_model,
@@ -128,7 +127,10 @@ async def test_box_chat_without_key_reports_no_key():
     assert result.code == "no_key"
 
 
-async def test_box_dry_run_does_not_call():
+async def test_box_dry_run_does_not_call(monkeypatch):
+    # dry-run 也要先有密钥，否则会先报 no_key（测试不能依赖本机真实密钥）
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     box = ModelBox(AgentContext(options={"model_dry_run": True}))
     result = await box.embed(["文本"])
     assert result.code == "dry_run"

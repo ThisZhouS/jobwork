@@ -102,6 +102,25 @@ def _agent_rows() -> list[dict]:
         return []
 
 
+def _status_payload(store: AppStore) -> dict:
+    from ..agents.models import load_errors as model_load_errors
+    from ..agents.registry import load_errors as agent_load_errors
+
+    stat = store.stats()
+    return {
+        "db": {"ok": True, **stat},
+        "login": store.logins(),
+        "platforms": login_platforms(),
+        "sources": sources(),
+        "agents": _agent_rows(),
+        # 加载失败不能只留在进程内存里：前端/CLI 要能看出少了什么
+        "diagnostics": {
+            "agent_load_errors": agent_load_errors(),
+            "model_load_errors": model_load_errors(),
+        },
+    }
+
+
 def _printer(json_mode: bool):
     """统一的事件输出：JSON 模式走 JSONL，便于前端逐行解析。"""
 
@@ -144,22 +163,57 @@ def cmd_app(args) -> int:
             return 0
 
         if args.action == "status":
-            stat = store.stats()
-            payload = {
-                "db": {"ok": True, **stat},
-                "login": store.logins(),
-                "platforms": login_platforms(),
-                "sources": sources(),
-                "agents": _agent_rows(),
-            }
+            payload = _status_payload(store)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False, default=str))
             else:
+                stat = payload["db"]
                 print(f"库内存量：岗位 {stat.get('jobs')} / 公司 {stat.get('companies')} / "
                       f"证据 {stat.get('backduty_evidence')} / 打分 {stat.get('company_score')}")
                 print(f"登录态：{payload['login'] or '（无）'}")
                 print("数据源：" + "，".join(s["name"] for s in payload["sources"]))
                 print("agent：" + "，".join(a["name"] for a in payload["agents"]))
+                load_errors = {**payload["diagnostics"]["agent_load_errors"],
+                               **payload["diagnostics"]["model_load_errors"]}
+                for name, message in load_errors.items():
+                    print(f"  ! 加载失败 {name}: {message}")
+            return 0
+
+        if args.action == "bootstrap":
+            # 首屏一次取齐：只拉起一个 Python 进程，省掉 3~4 次冷启动
+            from ..agents.models import describe_models
+            from ..agents.resume_tailor import QUESTIONS
+            from ..app.views import filter_options, skill_cloud
+
+            errors: dict[str, str] = {}
+
+            def part(name, fn):
+                try:
+                    return fn()
+                except Exception as exc:  # noqa: BLE001 - 单块失败不拖垮整次首屏
+                    errors[name] = f"{type(exc).__name__}: {exc}"
+                    return None
+
+            resume_row = part("resume", store.latest_resume)
+            resume_versions = part("resume_versions", store.resume_versions)
+            payload = {
+                "status": part("status", lambda: _status_payload(store)),
+                "models": part("models", describe_models),
+                "data": part("data", store.data_view),
+                "filters": part("filters", filter_options),
+                "cloud": part("cloud", lambda: skill_cloud(store)),
+                "resume": None if "resume" in errors else {
+                    "ok": resume_row is not None,
+                    "resume": resume_row,
+                    "questions": list(QUESTIONS),
+                    "versions": resume_versions or [],
+                },
+                "errors": errors,
+            }
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                print("首屏数据已取齐：status / models / data / filters / cloud / resume")
             return 0
 
         if args.action == "login":
@@ -181,6 +235,13 @@ def cmd_app(args) -> int:
 
             from ..agents import AgentContext
 
+            # 老库升级后需要补新的索引/列；脚本是幂等的，失败不阻断运行
+            try:
+                store.init_schema()
+            except Exception as exc:  # noqa: BLE001 - 已有库可能没有 DDL 权限
+                emit({"type": "warn", "name": "schema",
+                      "message": f"建表/迁移失败：{type(exc).__name__}: {exc}"})
+
             job = None
             if getattr(args, "job_id", None):
                 rows = store.jobs_for_fit(limit=1, job_ids=[args.job_id])
@@ -194,7 +255,7 @@ def cmd_app(args) -> int:
                 source=args.source,
                 filters={"query": args.query, "city": args.city, "pages": args.pages,
                          "salary": args.salary, "experience": args.experience,
-                         "degree": args.degree,
+                         "degree": args.degree, "industry": args.industry,
                          "job": job,
                          "job_id": args.job_id if job else None},
                 company_key=getattr(args, "company_key", None),
@@ -212,8 +273,8 @@ def cmd_app(args) -> int:
                 retries=getattr(args, "retries", 3),
                 task_timeout=getattr(args, "task_timeout", 120.0),
             )
-            result = asyncio.run(run_pipeline(store, options,
-                                              ctx=AgentContext(db=db), emit=emit))
+            ctx = AgentContext(db=db, options={"models_enabled": not args.no_model})
+            result = asyncio.run(run_pipeline(store, options, ctx=ctx, emit=emit))
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, default=str))
             else:
@@ -313,14 +374,14 @@ def cmd_app(args) -> int:
                 print("--enable 与 --disable 不能同时给")
                 return 2
             enabled = True if args.enable else (False if args.disable else None)
-            model = _parse_pairs(args.model, sep="=")
-            options = _parse_pairs(args.option, sep="=")
+            model_updates = _parse_pairs(args.model, sep="=")
+            option_updates = _parse_pairs(args.option, sep="=")
             raw_clear = getattr(args, "model_default", None)
             clear_models = ([item.strip() for item in str(raw_clear).split(",")
                              if item.strip()] or None) if raw_clear else None
             try:
-                conf = set_config(args.name, enabled=enabled, model=model,
-                                  clear_models=clear_models, options=options)
+                conf = set_config(args.name, enabled=enabled, model=model_updates,
+                                  clear_models=clear_models, options=option_updates)
             except (ValueError, KeyError) as exc:
                 print(f"配置失败：{exc}")
                 return 2
@@ -389,10 +450,11 @@ def cmd_app(args) -> int:
             if not args.job_id:
                 print("需要 --job-id")
                 return 2
-            payload = job_detail(store, args.job_id)
-            if payload is None:
+            detail = job_detail(store, args.job_id)
+            if detail is None:
                 print("没有这个岗位")
                 return 2
+            payload = detail
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False, default=str))
             else:
@@ -431,12 +493,67 @@ def cmd_app(args) -> int:
             from ..agents.resume_tailor import QUESTIONS
 
             row = store.latest_resume()
-            payload = {"ok": row is not None, "resume": row, "questions": list(QUESTIONS)}
+            payload = {"ok": row is not None, "resume": row, "questions": list(QUESTIONS),
+                       "versions": store.resume_versions()}
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False, default=str))
             else:
                 print("还没有简历版本" if not row
                       else f"最新简历版本 #{row['id']}（{row['name']}）")
+            return 0
+
+        if args.action == "resume-version":
+            if not args.resume_id:
+                print("需要 --resume-id")
+                return 2
+            row = store.resume_version(args.resume_id)
+            if row is None:
+                print(f"没有简历版本 #{args.resume_id}")
+                return 2
+            payload = {"ok": True, "resume": row}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                print(f"简历版本 #{row['id']}（{row['name']}）")
+            return 0
+
+        if args.action == "resume-save":
+            content = _read_json(args.resume)
+            if not content:
+                print("需要 --resume 指向合法的简历 JSON 文件")
+                return 2
+            parent = store.latest_resume()
+            resume_id = store.save_resume(
+                content,
+                parent_id=parent["id"] if parent else None,
+                confirmed=True,
+            )
+            payload = {
+                "ok": True,
+                "resume_id": resume_id,
+                "resume": store.latest_resume(),
+                "questions": list(QUESTIONS),
+                "versions": store.resume_versions(),
+            }
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                print(f"已保存简历版本 #{resume_id} 并生效")
+            return 0
+
+        if args.action == "resume-confirm":
+            if not args.resume_id:
+                print("需要 --resume-id")
+                return 2
+            if not store.confirm_resume(args.resume_id):
+                print(f"没有简历版本 #{args.resume_id}")
+                return 2
+            row = store.latest_resume()
+            payload = {"ok": True, "confirmed_id": args.resume_id, "resume": row}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, default=str))
+            else:
+                print(f"简历版本 #{args.resume_id} 已确认")
             return 0
     finally:
         db.close()

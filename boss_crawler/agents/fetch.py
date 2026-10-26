@@ -210,7 +210,7 @@ class StealthBrowser:
         try:
             from scrapling.fetchers import AsyncStealthySession as SessionClass
         except Exception:  # noqa: BLE001 - 老版本只有同步实现
-            from scrapling.fetchers import StealthySession as SessionClass
+            from scrapling.fetchers import StealthySession as SessionClass  # type: ignore[assignment]
 
         kwargs: dict[str, Any] = {"headless": self.headless, "source": stealth_source()}
         if self.state_file:

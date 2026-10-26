@@ -40,8 +40,27 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_DIR = STATE_DIR / "chrome-profile"
 STORAGE_STATE = STATE_DIR / "storage_state.json"
 
+def _resolve_config_dir() -> Path:
+    """仓库开发时用 ``config/``；wheel 安装后把包内默认配置复制到可写目录。
+
+    site-packages 通常不可写，所以不能直接读写包内 ``defaults/``。
+    """
+    repo_config = ROOT / "config"
+    if repo_config.is_dir():
+        return repo_config
+    target = STATE_DIR / "config"
+    source = Path(__file__).with_name("defaults")
+    if source.is_dir() and not target.exists():
+        import shutil
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 # 声明式配置目录；打包后复制到用户目录，允许设置页写回。
-CONFIG_DIR = Path(os.environ.get("BOSS_CONFIG_DIR") or (ROOT / "config"))
+CONFIG_DIR = Path(os.environ.get("BOSS_CONFIG_DIR") or _resolve_config_dir())
 
 OUTPUT_DIR = ROOT / "output"
 STEALTH_JS = Path(__file__).with_name("stealth.js")

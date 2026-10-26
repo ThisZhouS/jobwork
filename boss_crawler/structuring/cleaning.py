@@ -8,10 +8,6 @@ from __future__ import annotations
 
 from .jd import structure_jd
 from .text import (
-    _ANON_RE,
-    _EDGE_PUNCT,
-    _LEGAL_RE,
-    _WS_RE,
     clean_company,
     extract_legal_name,
     normalize_text,
@@ -104,7 +100,7 @@ def build_companies(jobs: list[dict]) -> list[dict]:
     groups: dict[str, dict] = {}
     for job in jobs:
         info = job["company"]
-        key = info["key"] or job.get("job_id") or job.get("title")
+        key = str(info["key"] or job.get("job_id") or job.get("title") or "")
         group = groups.get(key)
         if group is None:
             group = {

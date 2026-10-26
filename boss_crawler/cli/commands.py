@@ -6,12 +6,11 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 
 from .. import config
-from ..crawl import BossBrowser, BrowserUnavailable, JobCrawler, LoginRequired
+from ..crawl import BossBrowser, JobCrawler, LoginRequired
 from ..filters import resolve_filters
 from ..store import (
     JobStore,
@@ -552,8 +551,6 @@ def cmd_dd(args) -> int:
         DueDiligenceOptions,
         TianyanchaClient,
         estimate_cost,
-        investigate,
-        print_summary,
     )
 
     db = _open_db(args)
@@ -809,7 +806,7 @@ def cmd_agents(args) -> int:
     import asyncio
     import json
 
-    from ..agents import AgentContext, AgentKind, AgentRequest, Pipeline, catalog
+    from ..agents import AgentKind, AgentRequest, catalog
 
     if args.action == "list":
         from ..agents.registry import load_errors
@@ -926,7 +923,8 @@ def _build_agent_context(args):
         http=http,
         browser=browser,
         options={"dump_dir": getattr(args, "dump_dir", None), "cwd": str(Path.cwd()),
-                 "no_browser": bool(getattr(args, "no_browser", False))},
+                 "no_browser": bool(getattr(args, "no_browser", False)),
+                 "models_enabled": not getattr(args, "no_model", False)},
     )
 
 

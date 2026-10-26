@@ -109,17 +109,25 @@ class Rule:
         return self.scorer is not None
 
     def evaluate(self, ctx: ScoreContext) -> Dimension:
+        return self.evaluate_with_state(ctx)[0]
+
+    def evaluate_with_state(self, ctx: ScoreContext) -> tuple[Dimension, bool]:
+        """返回 ``(维度, 是否有真实数据)``。
+
+        中性分既可能来自"没规则"、也可能来自"没数据"，两者都不该被
+        当成真实评分落库，所以要把覆盖状态单独带出来。
+        """
         if self.scorer is None:
             return Dimension(self.name, NEUTRAL, self.weight,
-                             f"规则未定义{('：' + self.hint) if self.hint else ''}")
+                             f"规则未定义{('：' + self.hint) if self.hint else ''}"), False
         try:
             value = self.scorer(ctx)
         except Exception as exc:  # noqa: BLE001 - 规则写错不应该炸掉整个 agent
             return Dimension(self.name, NEUTRAL, self.weight,
-                             f"规则执行出错（{type(exc).__name__}），按中性处理")
+                             f"规则执行出错（{type(exc).__name__}），按中性处理"), False
         if value is None:
             return Dimension(self.name, NEUTRAL, self.weight,
-                             f"无数据，按中性处理{('：' + self.hint) if self.hint else ''}")
+                             f"无数据，按中性处理{('：' + self.hint) if self.hint else ''}"), False
         score = max(0.0, min(100.0, float(value)))
         reason = ""
         if self.reasoner is not None:
@@ -127,7 +135,8 @@ class Rule:
                 reason = str(self.reasoner(ctx))
             except Exception:  # noqa: BLE001
                 reason = ""
-        return Dimension(self.name, score, self.weight, reason or self.hint or "已按规则计算")
+        return Dimension(self.name, score, self.weight,
+                         reason or self.hint or "已按规则计算"), True
 
 
 @dataclass
@@ -145,10 +154,14 @@ class Rubric:
         return len(self.rules)
 
     def build_card(self, ctx: ScoreContext, subject: str) -> ScoreCard:
-        dims = [rule.evaluate(ctx) for rule in self.rules]
-        card = ScoreCard(subject=subject, dimensions=dims)
+        return self.build_card_with_coverage(ctx, subject)[0]
+
+    def build_card_with_coverage(self, ctx: ScoreContext,
+                                 subject: str) -> tuple[ScoreCard, int]:
+        evaluated = [rule.evaluate_with_state(ctx) for rule in self.rules]
+        card = ScoreCard(subject=subject, dimensions=[dim for dim, _ in evaluated])
         card.finalize()
-        return card
+        return card, sum(1 for _, computed in evaluated if computed)
 
 
 class ScoringAgentMixin:
@@ -162,7 +175,8 @@ class ScoringAgentMixin:
     """
 
     kind = AgentKind.SCORING
-    produces = ("score",)
+    name: str = ""
+    produces: tuple[str, ...] = ("score",)
     mandatory_tools: tuple[str, ...] = ("log_event",)
     log_tool = "log_event"
     tools: tuple = ()
@@ -171,41 +185,47 @@ class ScoringAgentMixin:
         raise NotImplementedError
 
     async def run(self, request, ctx):  # type: ignore[override]
-        from ..toolagent import open_toolbox
 
         rubric = self.build_rubric(request)
         score_ctx = ScoreContext.build(request)
         subject = self.subject_of(request, score_ctx)
-        card = rubric.build_card(score_ctx, subject)
+        card, computed = rubric.build_card_with_coverage(score_ctx, subject)
 
         undefined = [rule.name for rule in rubric.rules if not rule.defined]
         notes: list[str] = []
         if undefined:
             notes.append("规则未定义：" + "、".join(undefined))
             notes.append("框架已就绪，在 scoring/ 对应文件里给 Rule.scorer 填一个函数即可生效")
+        if computed == 0:
+            notes.append("本次没有任何维度取到有效数据，分数仅代表中性假设")
         card.notes.extend(notes)
-        card.verdict = card.verdict or _default_verdict(card, bool(undefined))
+        card.verdict = card.verdict or _default_verdict(card, bool(undefined), computed)
 
-        status = AgentStatus.PARTIAL if undefined else AgentStatus.OK
+        status = AgentStatus.OK if not undefined and computed else AgentStatus.PARTIAL
         meta = {"dimensions": {d.name: d.score for d in card.dimensions},
                 "rules_defined": rubric.defined_count,
-                "rules_total": rubric.total_count}
+                "rules_total": rubric.total_count,
+                "dimensions_computed": computed}
         meta.update(self.extra_meta(request, score_ctx, card))
         result = AgentResult(agent=self.name, status=status, score=card, notes=notes,
                              meta=meta)
 
         if status is not AgentStatus.OK:
-            await self.diagnose(ctx, request, result, undefined)
+            await self.diagnose(ctx, request, result, undefined, computed)
         return result
 
     async def diagnose(self, ctx, request, result: AgentResult,
-                       undefined: list[str]) -> None:
+                       undefined: list[str], computed: int = 0) -> None:
         """写诊断：为什么这个 agent 没给出可用分数。"""
         from ..tools import get_tool
         from ..toolagent import open_toolbox
 
-        message = ("评分规则未定义：" + "、".join(undefined)) if undefined else \
-                  (result.error or "没有产出评分")
+        if undefined:
+            message = "评分规则未定义：" + "、".join(undefined)
+        elif computed == 0:
+            message = "评分没有取到有效数据，未落库"
+        else:
+            message = result.error or "没有产出评分"
         try:
             async with open_toolbox(ctx) as box:
                 await get_tool(self.log_tool).execute(
@@ -225,7 +245,9 @@ class ScoringAgentMixin:
         return {}
 
 
-def _default_verdict(card: ScoreCard, has_undefined: bool) -> str:
+def _default_verdict(card: ScoreCard, has_undefined: bool, computed: int) -> str:
     if has_undefined:
         return "评分规则尚未定义，当前分数仅代表中性假设"
+    if computed == 0:
+        return "本次没有取到有效数据，当前分数仅代表中性假设"
     return f"综合 {card.total:.1f} 分（{grade_of(card.total)}）"

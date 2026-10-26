@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import config
 from ..structuring import build_companies, clean_record
 
 def expand_inputs(patterns: list[str]) -> list[Path]:
@@ -92,7 +91,6 @@ def load_clean_records(inputs: list[str]):
     """读取原始 JSONL -> (清洗后的 jobs, raw_by_id, companies)。"""
     import json
 
-    from ..structuring import build_companies, clean_record
 
     raw_by_id: dict[str, dict] = {}
     jobs: list[dict] = []

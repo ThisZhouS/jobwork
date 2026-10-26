@@ -8,7 +8,9 @@ BOSS直聘 的职位列表与职位详情，重点解决两类反爬措施：
 * **会话页面销毁**：被判定为自动化后，页面会 `window.close()` 或跳 `about:blank`，
   DOM 被清空，抓取中断。
 
-登录态、职位数据都落在本地，不上传任何地方。
+登录态、职位数据默认只落在本地数据库。启用 AI 背调摘要或简历润色时，相关文本
+（公司名、证据摘要、简历草稿）会发送到所配置的模型服务（DeepSeek / 火山方舟）；
+可用 `--no-model` 或设置页关停。密钥只从环境变量或 `.state/` 读取，不写进配置文件。
 
 ---
 
@@ -47,7 +49,7 @@ boss_crawler/
     parser.py          参数定义 + 共享参数组（add_input_args / add_db_args）
     commands.py        每个子命令一个 cmd_*，只做编排
     __init__.py        main()：异常归一 + 按 args.func 派发
-tests/               102 条单元测试（按包结构对应）
+tests/               单元测试（按包结构对应）
 scripts/
   research/          早期接口探测与反爬取证（一次性留档，不属于生产路径）
   anti_detect_check.py 反检测自检
@@ -64,7 +66,8 @@ output/clean/        清洗结果（jobs.xlsx / companies.csv / jobs_clean.*）
 ## 2. 快速开始
 
 ```powershell
-pip install -r requirements.txt          # scrapling + patchright + browserforge
+uv sync                                  # 按 uv.lock 安装（推荐，版本可复现）
+# 或不使用 uv：pip install -r requirements.txt
 python -m patchright install chromium    # 首次需要下载 patchright 的浏览器
 
 python -m boss_crawler login             # 弹出窗口，用 BOSS直聘 App 扫码
@@ -573,17 +576,21 @@ python -m boss_crawler agents list      # 8 个 agent，含各自调用的工具
 | `weibo` | `weibo_search` | 可用（移动端接口常免登录） |
 | `tianyancha_web` | `tianyancha_full` | 可用（免登录，有限频） |
 | `tianyan_ai` | `tyc_bundle` | 可用（需 `tyc login`） |
-| `company_score` / `resume_score` / `job_fit` | —— | **空框架，规则待定义** |
+| `company_score` | —— | 可用（五维规则已实现，无信号时跳过落库） |
+| `resume_score` / `job_fit` | —— | **空框架，规则待定义** |
 
 ```powershell
 python -m boss_crawler agents run tianyan_ai --company 茶百道
 python -m boss_crawler agents run tianyancha_web tianyan_ai company_score --company 茶百道
 ```
 
-### 评分 agent 目前是空框架
+### 评分 agent：公司打分已实现，简历/适配度保留为框架
 
-三个评分 agent 已声明好维度与权重，但**不含任何评分规则**——分值怎么算属于业务判断，
-留给你定义。填法：给 `Rule.scorer` 一个函数，返回 0–100，或返回 `None` 表示"没数据"：
+`company_score` 已实现风险/待遇/压力/环境/福利五维规则；`resume_score` 与 `job_fit`
+仍只声明维度与权重，**不含评分规则**——分值怎么算属于业务判断，留给你定义。
+没有任何维度取到有效数据时，评分状态为 `partial`，流水线不会把中性 60 分写进库。
+
+填法：给 `Rule.scorer` 一个函数，返回 0–100，或返回 `None` 表示"没数据"：
 
 ```python
 def score_status(ctx):                       # ctx: ScoreContext
@@ -629,6 +636,9 @@ python -m boss_crawler app login --platforms zhihu,weibo   # 弹有头浏览器�
 python -m boss_crawler app run   --query Python --city 成都 --limit 5 --json
 python -m boss_crawler app data  --json         # 前端展示数据
 python -m boss_crawler app resume --json        # 简历版本 + 要问用户的问题
+python -m boss_crawler app resume-version --resume-id N --json  # 读取历史版本正文
+python -m boss_crawler app resume-save --resume path.json --json  # 存为新版本并生效
+python -m boss_crawler app resume-confirm --resume-id N --json    # 确认已有草稿生效
 python -m boss_crawler app cloud  --json        # 技能词云（按岗位数统计）
 python -m boss_crawler app company --company-key K --json   # 公司详情（含劳务派遣）
 python -m boss_crawler app job    --job-id J --json         # 岗位详情（含来源链接）
@@ -862,7 +872,10 @@ BOSS直聘 的登录票据主要在 httpOnly Cookie 里，`document.cookie` 读�
 
 ```powershell
 python -m boss_crawler doctor
-python -m pytest -q                        # 461 条
+uv sync --extra dev                       # 开发依赖（pytest / ruff / mypy）
+python -m ruff check .                    # 静态检查（CI 同款）
+python -m mypy                            # 类型检查（配置见 pyproject.toml）
+python -m pytest -q --cov                 # 全量单元测试 + 覆盖率（阈值 60%）
 python tools/anti_detect_check.py 20      # 真网观测：页面是否会被销毁
 ```
 

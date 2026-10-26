@@ -220,6 +220,8 @@ class BossBrowser:
         """把 context 的 storage_state 落盘（含 httpOnly，属敏感文件）。"""
         target = Path(path or config.STORAGE_STATE)
         target.parent.mkdir(parents=True, exist_ok=True)
+        if self.context is None:
+            raise RuntimeError("浏览器尚未启动，无法保存登录态")
         self.context.storage_state(path=str(target))
         return target
 

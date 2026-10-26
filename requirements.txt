@@ -1,7 +1,5 @@
-# 采集：scrapling 的 StealthySession 基于 patchright，需要一并安装
-scrapling==0.4.8
-patchright>=1.64
-browserforge
+# 采集：scrapling 的 StealthySession 基于 patchright，fetchers extra 会带上反爬栈
+scrapling[fetchers]==0.4.8
 
 # 存储与向量化
 psycopg2-binary>=2.9

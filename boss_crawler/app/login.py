@@ -91,11 +91,11 @@ async def login(platform: str, *, state_root: str | Path = ".state/login",
         try:
             from scrapling.fetchers import AsyncStealthySession as SessionClass
         except Exception:  # noqa: BLE001 - 老版本只有同步实现
-            from scrapling.fetchers import StealthySession as SessionClass
+            from scrapling.fetchers import StealthySession as SessionClass  # type: ignore[assignment]
 
         from ..crawl.browser import stealth_source
 
-        session = SessionClass(
+        session = SessionClass(  # type: ignore[call-arg]
             headless=False,
             user_data_dir=str(directory),
             source=stealth_source(),

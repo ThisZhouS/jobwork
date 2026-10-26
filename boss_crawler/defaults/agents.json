@@ -1,0 +1,25 @@
+{
+  "_说明": "agent 配置。enabled=false 会在流水线里跳过该 agent；model 按能力覆盖模型规格（见 config/models.json）；options 透传给 agent（用 ctx.option 读）。改完立即生效，不用重启。",
+  "_示例": {
+    "zhihu": {
+      "enabled": false
+    },
+    "company_score": {
+      "model": {
+        "chat": "chat.doubao"
+      }
+    },
+    "resume_tailor": {
+      "options": {
+        "max_questions": 3
+      }
+    }
+  },
+  "agents": {
+    "resume_tailor": {
+      "model": {
+        "chat": "chat.deepseek"
+      }
+    }
+  }
+}

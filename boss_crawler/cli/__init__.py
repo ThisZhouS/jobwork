@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import sys
 
-from .. import config
 from ..crawl import BrowserUnavailable, LoginRequired
 from .parser import build_parser
 

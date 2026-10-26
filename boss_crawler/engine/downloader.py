@@ -139,23 +139,24 @@ class Downloader:
                 )
                 response = Response(request=outgoing, status=status, text=text, elapsed_ms=elapsed)
             except Exception as exc:  # 网络异常：先给中间件机会转换
-                response = None
+                fallback: Response | None = None
                 for middleware in reversed(self.middlewares):
                     converted = middleware.process_exception(outgoing, exc)
                     if converted is not None:
-                        response = converted
+                        fallback = converted
                         break
-                if response is None:
-                    response = Response(request=outgoing, status=0, error=exc)
+                response = fallback if fallback is not None else Response(
+                    request=outgoing, status=0, error=exc
+                )
             else:
                 self.throttle.observe(host, elapsed / 1000.0)
 
         # 响应阶段按相反顺序过链（与请求阶段对称）
         for middleware in reversed(self.middlewares):
-            maybe = middleware.process_response(response)
-            if maybe is None:
+            processed = middleware.process_response(response)
+            if processed is None:
                 return Response(request=outgoing, status=0, error=RuntimeError("response dropped by middleware"))
-            response = maybe
+            response = processed
         return response
 
     async def close(self) -> None:

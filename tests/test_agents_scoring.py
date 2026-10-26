@@ -196,6 +196,20 @@ async def test_all_rules_defined_makes_status_ok():
     assert result.score.total == pytest.approx(70.0)
 
 
+async def test_all_rules_defined_but_no_data_is_partial():
+    """规则齐全但本次没数据时，中性分不能被当成真实评分。"""
+    agent = JobFitAgent()
+
+    def patched(request):
+        return Rubric(rules=[Rule("硬性条件", weight=1.0, scorer=lambda ctx: None)])
+
+    agent.build_rubric = patched
+    result = await agent.execute(AgentRequest(job={"title": "后端"}), AgentContext())
+    assert result.status is AgentStatus.PARTIAL
+    assert result.meta["dimensions_computed"] == 0
+    assert "没有任何维度取到有效数据" in " ".join(result.score.notes)
+
+
 async def test_subject_of_uses_profile_name():
     agent = CompanyScoreAgent()
     finding = Finding(source="s", title="X", meta={"profile": {"name": "四川百茶百道"}})

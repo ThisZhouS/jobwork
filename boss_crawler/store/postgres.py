@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 
 import psycopg2
@@ -22,7 +23,6 @@ class DatabaseError(RuntimeError):
 
 
 def resolve_password() -> str:
-    import os
 
     password = os.environ.get("PGPASSWORD") or ""
     if not password and config.PG_PASSWORD_FILE.exists():
@@ -32,6 +32,30 @@ def resolve_password() -> str:
             f"未找到数据库密码：请设置环境变量 PGPASSWORD 或写入 {config.PG_PASSWORD_FILE}"
         )
     return password
+
+
+class _CursorContext:
+    """游标包装：块内异常时回滚。
+
+    psycopg2 在事务中遇到 SQL 错误后，连接会停在
+    ``InFailedSqlTransaction``，后续语句全部报错——即使调用方已经
+    ``try/except`` 吞掉了原始异常。所以回滚必须发生在游标块退出时，
+    而不是指望每个调用点自己记得。
+    """
+
+    def __init__(self, db: "Database", cur) -> None:
+        self._db = db
+        self._cur = cur
+
+    def __enter__(self):
+        return self._cur
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            self._cur.close()
+        finally:
+            if exc_type is not None:
+                self._db.rollback()
 
 
 class Database:
@@ -68,8 +92,11 @@ class Database:
             self.conn.autocommit = False
         return self.conn
 
-    def cursor(self):
-        return self.connect().cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    def cursor(self) -> _CursorContext:
+        return _CursorContext(
+            self,
+            self.connect().cursor(cursor_factory=psycopg2.extras.RealDictCursor),
+        )
 
     def close(self) -> None:
         if self.conn is not None and not self.conn.closed:
@@ -85,6 +112,24 @@ class Database:
     def commit(self) -> None:
         self.connect().commit()
 
+    def rollback(self) -> None:
+        if self.conn is not None and not self.conn.closed:
+            try:
+                self.conn.rollback()
+            except psycopg2.Error:
+                pass
+
+    @contextmanager
+    def transaction(self):
+        """多语句原子操作：成功提交，任何异常回滚后原样抛出。"""
+        try:
+            yield self
+        except BaseException:
+            self.rollback()
+            raise
+        else:
+            self.commit()
+
     # ------------------------------------------------------------------ 建表
     def has_pgvector(self) -> bool:
         with self.cursor() as cur:
@@ -95,24 +140,62 @@ class Database:
     def init_schema(self) -> dict:
         """建表 + 建函数 + （若可用）启用 pgvector 列与索引。"""
         self.connect()
-        with self.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
-        self.commit()
+        self.apply_migrations([("core/001", SCHEMA_SQL)])
         info = {"pgvector": self.has_pgvector(), "vector_column": False, "index": None}
         if info["pgvector"]:
             info.update(self._ensure_pgvector_columns())
         return info
 
+    # ---------------------------------------------------------------- 迁移
+    def apply_migrations(self, migrations: Sequence[tuple[str, str]]) -> list[str]:
+        """按 version 升序执行尚未记录的迁移，每项一个事务。
+
+        version 是持久化键：已有库首次升级时会把幂等的基线脚本重跑一遍，
+        之后只有新增 version 才会执行。
+        """
+        self.connect()
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version     text PRIMARY KEY,
+                    applied_at  timestamptz NOT NULL DEFAULT now()
+                )
+                """
+            )
+        self.commit()
+        with self.cursor() as cur:
+            cur.execute("SELECT version FROM schema_migrations")
+            done = {row["version"] for row in cur.fetchall()}
+        applied: list[str] = []
+        for version, sql in sorted(migrations):
+            if version in done:
+                continue
+            with self.transaction():
+                with self.cursor() as cur:
+                    cur.execute(sql)
+                    cur.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (%s)",
+                        (version,),
+                    )
+            applied.append(version)
+        return applied
+
     def _ensure_pgvector_columns(self) -> dict:
         """检测到 vector 扩展时：加 vector 列 + HNSW 索引（本机未实测）。"""
-        result = {"vector_column": False, "index": None}
+        result: dict[str, Any] = {"vector_column": False, "index": None}
         with self.cursor() as cur:
             cur.execute("SELECT embedding_dim FROM jobs WHERE embedding_dim IS NOT NULL LIMIT 1")
             row = cur.fetchone()
             dim = row["embedding_dim"] if row else 2048
             for table in ("jobs", "companies"):
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS embedding_vec vector({dim})")
-            try:
+        self.commit()
+        result["vector_column"] = True
+
+        # 索引单独一个事务：HNSW 建失败时不能连带回滚刚加的向量列。
+        try:
+            with self.cursor() as cur:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS jobs_embedding_vec_idx "
                     "ON jobs USING hnsw (embedding_vec vector_cosine_ops)"
@@ -121,11 +204,11 @@ class Database:
                     "CREATE INDEX IF NOT EXISTS companies_embedding_vec_idx "
                     "ON companies USING hnsw (embedding_vec vector_cosine_ops)"
                 )
-                result["index"] = "hnsw"
-            except psycopg2.Error as exc:
-                self.log(f"  ! HNSW 索引创建失败（已忽略）：{str(exc).strip()}")
-            result["vector_column"] = True
-        self.commit()
+            self.commit()
+            result["index"] = "hnsw"
+        except psycopg2.Error as exc:
+            self.rollback()
+            self.log(f"  ! HNSW 索引创建失败（已忽略）：{str(exc).strip()}")
         return result
 
     # ------------------------------------------------------------------ 写入
@@ -168,8 +251,8 @@ class Database:
         raw_by_id = raw_by_id or {}
         rows = []
         missing_companies: dict[str, str] = {}
-        skill_links: list[tuple[str, str, str, str]] = []
-        benefit_links: list[tuple[str, str]] = []
+        skill_links: list[tuple[Any, str, str, str]] = []
+        benefit_links: list[tuple[Any, str]] = []
         for job in jobs:
             company = job.get("company") or {}
             workplace = job.get("workplace") or {}
@@ -236,7 +319,7 @@ class Database:
         if skill_links:
             job_ids = list({link[0] for link in skill_links})
             unique_skills = sorted({link[1] for link in skill_links if link[1]})
-            categories = {}
+            categories: dict[str, str] = {}
             for _job_id, skill, category, _source in skill_links:
                 categories.setdefault(skill, category)
             if unique_skills:
@@ -247,13 +330,13 @@ class Database:
                     [(skill, categories.get(skill, "其他")) for skill in unique_skills],
                 )
             cur.execute("DELETE FROM job_skills WHERE job_id = ANY(%s)", (job_ids,))
-            payload = [(job_id, skill, source) for job_id, skill, _c, source in skill_links if skill]
-            if payload:
+            skill_payload = [(job_id, skill, source) for job_id, skill, _c, source in skill_links if skill]
+            if skill_payload:
                 psycopg2.extras.execute_batch(
                     cur,
                     "INSERT INTO job_skills (job_id, skill, source) VALUES (%s, %s, %s) "
                     "ON CONFLICT (job_id, skill) DO NOTHING",
-                    payload,
+                    skill_payload,
                 )
         if benefit_links:
             job_ids = list({link[0] for link in benefit_links})
@@ -265,13 +348,13 @@ class Database:
                     [(name,) for name in unique],
                 )
             cur.execute("DELETE FROM job_benefits WHERE job_id = ANY(%s)", (job_ids,))
-            payload = [(job_id, benefit) for job_id, benefit in benefit_links if benefit]
-            if payload:
+            benefit_payload = [(job_id, benefit) for job_id, benefit in benefit_links if benefit]
+            if benefit_payload:
                 psycopg2.extras.execute_batch(
                     cur,
                     "INSERT INTO job_benefits (job_id, benefit) VALUES (%s, %s) "
                     "ON CONFLICT (job_id, benefit) DO NOTHING",
-                    payload,
+                    benefit_payload,
                 )
 
     # ------------------------------------------------------------------ 向量

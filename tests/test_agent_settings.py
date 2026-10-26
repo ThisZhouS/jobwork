@@ -35,6 +35,18 @@ def test_set_config_none_fields_keep_previous(cfg):
     assert conf.options == {"depth": 2}
 
 
+def test_string_false_disables_agent(cfg):
+    cfg.write_text(json.dumps({"agents": {"zhihu": {"enabled": "false"}}}),
+                   encoding="utf-8")
+    assert agent_settings.load(cfg)["zhihu"].enabled is False
+
+
+def test_corrupt_config_warns_instead_of_silently_resetting(cfg):
+    cfg.write_text("{not json", encoding="utf-8")
+    with pytest.warns(RuntimeWarning):
+        assert agent_settings.load(cfg) == {}
+
+
 def test_reset_removes_override(cfg):
     agent_settings.set_config("zhihu", enabled=False, path=cfg)
     agent_settings.reset_config("zhihu", cfg)
@@ -50,7 +62,8 @@ def test_save_is_atomic_no_tmp_left(cfg):
 
 def test_corrupt_file_does_not_raise(cfg):
     cfg.write_text("{ 这不是 JSON", encoding="utf-8")
-    assert agent_settings.load(cfg) == {}
+    with pytest.warns(RuntimeWarning):
+        assert agent_settings.load(cfg) == {}
 
 
 def test_noop_write_does_not_persist_entry(cfg):
@@ -154,6 +167,17 @@ def test_scope_context_passes_agent_options(cfg):
     agent_settings.set_config("resume_tailor", options={"max_questions": 2}, path=cfg)
     scoped = agent_settings.scope_context(AgentContext(), "resume_tailor", cfg)
     assert scoped.option("max_questions") == 2
+
+
+def test_scope_context_does_not_mutate_shared_nested_options(cfg):
+    from boss_crawler.agents.base import AgentContext
+
+    shared: dict = {}
+    ctx = AgentContext(options={"agent_options": shared})
+    agent_settings.set_config("resume_tailor", options={"max_questions": 2}, path=cfg)
+    agent_settings.scope_context(ctx, "resume_tailor", cfg)
+    assert shared == {}
+    assert ctx.option("max_questions") is None
 
 
 def test_scope_context_returns_same_when_no_config(cfg):

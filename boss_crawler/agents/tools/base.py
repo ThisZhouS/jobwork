@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
-from ..base import AgentContext, AgentStatus, MissingInput
+from ..base import AgentContext, AgentStatus
 from ..fetch import HttpFetcher, StealthBrowser, looks_blocked
 
 # ---------------------------------------------------------------- 结果
@@ -128,7 +128,7 @@ class ToolBox:
     # ------------------------------------------------------------ 资源
     async def http(self) -> HttpFetcher:
         if self.ctx.http is not None:
-            return self.ctx.http
+            return cast(HttpFetcher, self.ctx.http)
         async with self._lock:
             if self._http is None:
                 self._http = HttpFetcher(
@@ -145,7 +145,7 @@ class ToolBox:
         if not self.allow_browser:
             return None
         if self.ctx.browser is not None:
-            return self.ctx.browser
+            return cast(StealthBrowser, self.ctx.browser)
         async with self._lock:
             if self._browser is None:
                 self._browser = StealthBrowser(state_file=self.state)

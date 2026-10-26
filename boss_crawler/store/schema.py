@@ -1,6 +1,8 @@
 """数据库表结构：建表 DDL 与列定义（唯一的表结构事实来源）。
 
-改表结构只改这里：``db-init`` 会执行 ``SCHEMA_SQL``（全部语句幂等，可重复执行），
+``SCHEMA_SQL`` 是 ``core/001`` 基线（全部语句幂等，可重复执行），
+由 ``Database.init_schema()`` 通过 ``schema_migrations`` 记录执行状态。
+后续增量改动在迁移列表里追加 ``("core/00N", sql)``，不要直接改已发布的基线语义。
 仓储层按 ``JOB_COLUMNS`` / ``COMPANY_COLUMNS`` 决定写哪些列。
 
 设计要点：

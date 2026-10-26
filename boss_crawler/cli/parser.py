@@ -161,18 +161,22 @@ def build_parser() -> argparse.ArgumentParser:
     agents.add_argument("--dump-dir", default=None, help="把抓到的原始 HTML 存到该目录")
     agents.add_argument("--state", default=None, help="浏览器登录态目录（如需登录才抓的站点）")
     agents.add_argument("--no-browser", action="store_true", help="禁止使用浏览器，只用 HTTP")
+    agents.add_argument("--no-model", action="store_true", help="关停所有模型调用")
     agents.add_argument("--json", action="store_true", help="以 JSON 输出完整结果")
     agents.set_defaults(func=cmd_agents)
 
     app_cmd = sub.add_parser("app", help="应用层流水线：登录 / 运行 / 取数（前端对接入口）")
     add_db_args(app_cmd)
     app_cmd.add_argument("action",
-                         choices=["status", "init", "login", "run", "data", "resume",
+                         choices=["status", "bootstrap", "init", "login", "run", "data", "resume",
+                                  "resume-save", "resume-confirm", "resume-version",
                                   "filters", "cloud", "company", "job", "series", "models",
                                   "agents", "agent-set", "agent-reset",
                                   "model-set", "model-reset"],
-                         help="status=自检 init=建表 login=弹窗登录 run=跑流水线 "
-                              "data=列表 filters=筛选项 cloud=技能词云 company=公司详情 "
+                         help="status=自检 bootstrap=首屏一次取齐 init=建表 login=弹窗登录 run=跑流水线 "
+                              "data=列表 resume=最新简历 resume-save=保存并生效新版本 "
+                              "resume-confirm=确认简历版本 resume-version=读取指定简历版本 "
+                              "filters=筛选项 cloud=技能词云 company=公司详情 "
                               "job=岗位详情 series=维度折线 models=模型规格 "
                               "agents=agent 配置 agent-set=改配置 agent-reset=恢复默认 "
                               "model-set=改模型配置 model-reset=恢复默认")
@@ -185,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--salary", default=None, help="薪资档位，如 20-50K")
     app_cmd.add_argument("--experience", default=None, help="工作经验，如 3-5年")
     app_cmd.add_argument("--degree", default=None, help="学历要求")
+    app_cmd.add_argument("--industry", default=None, help="公司行业，如 计算机软件 / 人工智能")
     app_cmd.add_argument("--limit", type=int, default=20, help="参与背调的公司数")
     app_cmd.add_argument("--concurrency", type=int, default=3,
                          help="背调任务并发数（对标 Scrapy CONCURRENT_REQUESTS）")
@@ -199,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     app_cmd.add_argument("--no-fit", action="store_true", help="跳过适配度")
     app_cmd.add_argument("--with-resume", action="store_true", help="同时生成定向简历")
     app_cmd.add_argument("--job-id", default=None, help="resume/job 动作：目标岗位 id")
+    app_cmd.add_argument("--resume-id", type=int, default=None,
+                         help="resume-confirm/resume-version 动作：简历版本 id")
     app_cmd.add_argument("--company-key", default=None, help="company/series 动作：公司主键")
     app_cmd.add_argument("--field", default=None, help="series 动作：要画折线的字段（默认 total）")
     app_cmd.add_argument("--no-model", action="store_true", help="关停所有模型调用")

@@ -18,7 +18,6 @@ from boss_crawler.agents.toolagent import (
     ToolAgent,
     ToolCall,
     describe_data,
-    open_toolbox,
     rows_to_findings,
     sentiment_summary,
 )

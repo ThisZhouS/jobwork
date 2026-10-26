@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -61,16 +62,24 @@ def load(path: Path | None = None) -> dict[str, AgentConfig]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - 坏文件不该让整包起不来
+    except Exception as exc:  # noqa: BLE001 - 坏文件不该让整包起不来
+        warnings.warn(f"agent 配置无法解析，已按默认值运行：{path}（{exc}）",
+                      RuntimeWarning, stacklevel=2)
         return {}
     items = raw.get("agents") or {}
     out: dict[str, AgentConfig] = {}
     for name, conf in items.items():
         if not isinstance(conf, dict):
             continue
+        raw_enabled = conf.get("enabled", True)
+        if isinstance(raw_enabled, bool):
+            enabled = raw_enabled
+        else:
+            # JSON 里写成 "false"/"0"/"no" 时不能按真值处理
+            enabled = str(raw_enabled).strip().lower() not in ("false", "0", "no", "off", "")
         out[name] = AgentConfig(
             name=name,
-            enabled=bool(conf.get("enabled", True)),
+            enabled=enabled,
             model={str(k): str(v) for k, v in (conf.get("model") or {}).items()},
             options=dict(conf.get("options") or {}),
         )
@@ -190,7 +199,7 @@ def reset_config(name: str, path: Path | None = None) -> AgentConfig:
 # ---------------------------------------------------------------- 生效
 def effective(path: Path | None = None) -> list[dict[str, Any]]:
     """给 CLI / 前端用的合并视图：代码里的声明 + 配置文件里的覆盖。"""
-    from .registry import catalog, load_errors
+    from .registry import catalog
 
     configs = load(path)
     rows: list[dict[str, Any]] = []
@@ -224,7 +233,10 @@ def scope_context(ctx: Any, name: str, path: Path | None = None) -> Any:
         merged.update(conf.model)
         options["model_overrides"] = merged
     if conf.options:
-        options.setdefault("agent_options", {})[name] = dict(conf.options)
+        # 复制嵌套字典，别改到原 ctx 共享的那一份
+        agent_options = dict(options.get("agent_options") or {})
+        agent_options[name] = dict(conf.options)
+        options["agent_options"] = agent_options
         options.update(conf.options)
     return replace(ctx, options=options)
 

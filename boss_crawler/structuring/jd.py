@@ -23,15 +23,13 @@ from .jd_extract import (
     extract_years,
 )
 from .jd_sections import (
-    _clean_item,
     _dedupe,
-    _is_noise,
     _looks_like_duty,
     _split_banner,
     _split_items,
     split_sections,
 )
-from .jd_skills import extract_skills, normalize_skills, skill_category
+from .jd_skills import extract_skills, normalize_skills
 
 def structure_jd(
     description: str | None,

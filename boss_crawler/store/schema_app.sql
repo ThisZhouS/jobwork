@@ -1,6 +1,7 @@
 -- 应用层（求职背调工作台）新增表。
--- 与 db/schema.sql（采集层：jobs/companies/tyc_*）并存，互不覆盖。
--- 全部用 IF NOT EXISTS，可以反复执行。
+-- 与采集层 schema.py（jobs/companies/tyc_*）并存，互不覆盖。
+-- 本文件是 app/001 基线，全部用 IF NOT EXISTS，可以反复执行；
+-- 后续增量改动用新的迁移版本登记，不要直接修改已发布的基线语义。
 
 -- 一次完整流水线的运行记录（前端「运行」页签用它做历史）
 CREATE TABLE IF NOT EXISTS public.app_run (
@@ -28,9 +29,15 @@ CREATE TABLE IF NOT EXISTS public.backduty_evidence (
     weight        real,
     payload       jsonb,
     dedupe_key    text NOT NULL,
-    fetched_at    timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (dedupe_key)
+    fetched_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- 旧库迁移：去重键最初不含 company_key，同一 URL 会在公司之间互相覆盖。
+-- 用命名唯一索引承载 ON CONFLICT (company_key, dedupe_key)。
+ALTER TABLE public.backduty_evidence
+    DROP CONSTRAINT IF EXISTS backduty_evidence_dedupe_key_key;
+CREATE UNIQUE INDEX IF NOT EXISTS backduty_evidence_company_dedupe_uidx
+    ON public.backduty_evidence (company_key, dedupe_key);
 
 CREATE INDEX IF NOT EXISTS backduty_evidence_company_idx
     ON public.backduty_evidence (company_key, agent);

@@ -211,7 +211,8 @@ def best_match(rows: list[dict[str, Any]], company: str) -> dict[str, Any] | Non
         return None
 
     def rank(row: dict[str, Any]) -> tuple[int, int]:
-        profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+        raw_profile = row.get("profile")
+        profile: dict[str, Any] = raw_profile if isinstance(raw_profile, dict) else {}
         name = str(profile.get("name") or row.get("title") or "").strip().lower()
         if not name:
             return (0, 0)

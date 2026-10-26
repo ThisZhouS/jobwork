@@ -176,7 +176,7 @@ class ToolAgent(Agent):
         findings = dedupe(findings)
         has_data = any(r.usable and r.data for r in results)
         status = self.decide_status(results, findings, has_data)
-        meta = {
+        meta: dict[str, Any] = {
             "tools": [result.tool for result in results],
             "tool_statuses": {result.tool: result.status.value for result in results},
             "elapsed_s": round(time.perf_counter() - started, 2),
@@ -191,7 +191,7 @@ class ToolAgent(Agent):
             findings=findings,
             notes=_shorten(notes),
             error="；".join(errors) if errors and status in (AgentStatus.FAILED, AgentStatus.BLOCKED) else None,
-            elapsed_s=meta["elapsed_s"],
+            elapsed_s=float(meta.get("elapsed_s") or 0.0),
             meta=meta,
         )
 
@@ -337,10 +337,10 @@ def sentiment_summary(findings: Iterable[Finding]) -> dict[str, Any]:
     """情感分布摘要，供报告与评分使用。"""
     items = list(findings)
     judged = [f for f in items if f.sentiment is not None]
-    positive = sum(1 for f in judged if f.sentiment > 0)
-    negative = sum(1 for f in judged if f.sentiment < 0)
+    positive = sum(1 for f in items if f.sentiment is not None and f.sentiment > 0)
+    negative = sum(1 for f in items if f.sentiment is not None and f.sentiment < 0)
     top_negative = sorted(
-        (f for f in judged if f.sentiment < 0),
+        (f for f in items if f.sentiment is not None and f.sentiment < 0),
         key=lambda f: f.weight, reverse=True,
     )[:3]
     return {

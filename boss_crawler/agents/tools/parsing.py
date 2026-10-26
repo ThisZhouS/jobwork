@@ -229,7 +229,8 @@ def negative_ratio(findings: Iterable[Finding]) -> float:
     judged = [f for f in findings if f.sentiment is not None]
     if not judged:
         return 0.0
-    return round(sum(1 for f in judged if f.sentiment < 0) / len(judged), 3)
+    negative = sum(1 for f in findings if f.sentiment is not None and f.sentiment < 0)
+    return round(negative / len(judged), 3)
 
 
 def dedupe_rows(rows: Iterable[dict], *, key: str = "url") -> list[dict]:

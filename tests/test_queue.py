@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from boss_crawler.app.queue import RetryPolicy, TaskQueue
 
@@ -69,13 +68,28 @@ async def test_gives_up_after_max_attempts():
 
     async def always_fail():
         calls["n"] += 1
-        raise ValueError("坏")
+        raise RuntimeError("坏")
 
     results = await queue.map([("k", always_fail)])
     assert calls["n"] == 2
     assert results[0].ok is False
-    assert "ValueError" in results[0].error
+    assert "RuntimeError" in results[0].error
     assert queue.stats["failed"] == 1
+
+
+async def test_deterministic_error_is_not_retried():
+    """参数/类型错误重试也不会变好，默认直接失败。"""
+    queue = TaskQueue(workers=1, retry=policy(max_attempts=5), timeout=5)
+    calls = {"n": 0}
+
+    async def bad_args():
+        calls["n"] += 1
+        raise ValueError("字段缺失")
+
+    results = await queue.map([("k", bad_args)])
+    assert calls["n"] == 1
+    assert results[0].ok is False
+    assert queue.stats["retried"] == 0
 
 
 async def test_non_retryable_exception_fails_fast():
@@ -103,6 +117,40 @@ async def test_per_task_max_attempts_override():
     queue.submit("k", fail, max_attempts=2)
     await queue.run()
     assert calls["n"] == 2
+
+
+async def test_saturated_queue_does_not_busy_poll(monkeypatch):
+    """并发已满时不能用 0 超时反复唤醒——那会把单核 CPU 打满。"""
+    seen: list[float | None] = []
+    real_wait = asyncio.wait
+
+    async def spy(fs, *, timeout=None, return_when=asyncio.FIRST_COMPLETED):
+        seen.append(timeout)
+        return await real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(asyncio, "wait", spy)
+
+    queue = TaskQueue(workers=1, timeout=5)
+    gate = asyncio.Event()
+
+    async def blocked():
+        await gate.wait()
+        return "blocked"
+
+    async def queued():
+        return "queued"
+
+    queue.submit("blocked", blocked)
+    queue.submit("queued", queued)
+    runner = asyncio.create_task(queue.run())
+    await asyncio.sleep(0.02)
+
+    assert None in seen            # 满员时应无超时等待
+    assert all(t is None or t > 0 for t in seen)
+
+    gate.set()
+    results = await runner
+    assert all(r.ok for r in results)
 
 
 async def test_backoff_delay_grows_and_caps():

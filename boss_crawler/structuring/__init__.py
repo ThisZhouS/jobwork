@@ -19,10 +19,10 @@ from .jd import (
     extract_skills,
     extract_years,
     normalize_skills,
-    skill_category,
     split_sections,
     structure_jd,
 )
+from .jd_skills import skill_category
 from .text import (
     clean_company,
     collapse_repeat_prefix,

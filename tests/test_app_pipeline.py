@@ -34,6 +34,35 @@ def test_boss_source_registered_with_steps():
     assert "-p" in crawl and "2" in crawl
 
 
+def test_boss_source_passes_ui_filters_to_crawler():
+    source = get_source("boss")
+    steps = source.build_steps({
+        "query": "Python", "salary": "20-50K", "experience": "3-5年",
+        "degree": "本科", "industry": "计算机软件",
+    })
+    crawl = list(steps)[0]
+    for flag, value in (
+        ("--salary", "20-50K"), ("--experience", "3-5年"),
+        ("--degree", "本科"), ("--industry", "计算机软件"),
+    ):
+        assert flag in crawl
+        assert crawl[crawl.index(flag) + 1] == value
+
+
+def test_app_run_accepts_ui_filter_values():
+    from boss_crawler.cli.parser import build_parser
+
+    args = build_parser().parse_args([
+        "app", "run", "--query", "Python", "--salary", "20-50K",
+        "--experience", "3-5年", "--degree", "本科", "--industry", "计算机软件",
+        "--no-crawl", "--json",
+    ])
+    assert args.salary == "20-50K"
+    assert args.experience == "3-5年"
+    assert args.degree == "本科"
+    assert args.industry == "计算机软件"
+
+
 def test_reserved_sources_are_declared_but_not_implemented():
     rows = {row["name"]: row for row in sources()}
     for name in ("lagou", "zhaopin", "51job"):
@@ -167,7 +196,7 @@ class FakeStore:
         return None
 
     def jobs_summary(self, key):
-        return {"count": 0, "welfare": []}
+        return {"count": 1, "salary_max": 20000, "welfare": ["双休"]}
 
     def jobs_for_fit(self, limit=50):
         return self.jobs[:limit]
@@ -213,6 +242,41 @@ async def test_pipeline_scores_companies_when_stages_off():
     assert store.scores[0][2] and "is_labor_dispatch" in store.scores[0][2]
     assert store.finished[1] == "done"
     assert any(event["type"] == "done" for event in events)
+
+
+async def test_agent_errors_are_not_silently_skipped(monkeypatch):
+    """队列里的真实异常要抛出去；串行阶段则记数并让运行标记为 partial。"""
+    from boss_crawler.app import pipeline as pipeline_mod
+
+    class BoomAgent:
+        async def execute(self, request, ctx):
+            raise RuntimeError("模型/网络故障")
+
+    monkeypatch.setattr(pipeline_mod, "get", lambda name: BoomAgent)
+    store = FakeStore()
+    options = Options(enable_crawl=False, enable_backduty=False,
+                      enable_company_score=False, enable_job_fit=False)
+    pipe = pipeline_mod.Pipeline(store, options)
+    request = AgentRequest(company_name="某公司")
+
+    with pytest.raises(RuntimeError):
+        await pipe._run_agent("boom", request, ctx=AgentContext())
+
+    assert await pipe._run_agent("boom", request) is None
+    assert pipe.summary["agent_errors"] == 1
+
+
+async def test_pipeline_does_not_persist_score_without_signals():
+    """全部维度都无数据时只是中性 60 分，不能当成真实评分落库。"""
+    store = FakeStore()
+    store.jobs_summary = lambda key: {"count": 0, "welfare": []}
+    options = Options(enable_crawl=False, enable_backduty=False,
+                      enable_job_fit=False)
+    result = await Pipeline(store, options).run()
+    assert result["status"] == "done"
+    assert store.scores == []
+    assert result["summary"]["scores"] == 0
+    assert result["summary"]["scores_skipped"] == 2
 
 
 async def test_pipeline_skips_job_fit_without_resume():
@@ -275,3 +339,15 @@ def test_dedupe_key_falls_back_to_title():
     key = dedupe_key("a", title="欠薪", published_at="2021-06-01")
     assert key == dedupe_key("a", title="欠薪", published_at="2021-06-01")
     assert key != dedupe_key("a", title="别的")
+
+
+def test_dedupe_key_is_scoped_by_company():
+    # 同一篇报道可能同时提到多家公司，但不能因此互相覆盖证据
+    assert (dedupe_key("news", company_key="A", url="u1")
+            != dedupe_key("news", company_key="B", url="u1"))
+
+
+def test_dedupe_key_falls_back_to_snippet():
+    key = dedupe_key("news", company_key="A", snippet="拖欠工资")
+    assert key == dedupe_key("news", company_key="A", snippet="拖欠工资")
+    assert key != dedupe_key("news", company_key="A", snippet="别的")

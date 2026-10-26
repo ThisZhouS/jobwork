@@ -133,8 +133,7 @@ def skill_cloud(store: AppStore, *, limit: int = 200,
 # ---------------------------------------------------------------- 公司详情
 def company_detail(store: AppStore, company_key: str) -> dict:
     """公司详情页：基本信息、风险、评价、在招岗位、维度、劳务派遣。"""
-    score = next((row for row in store.latest_company_scores(limit=500)
-                  if row["company_key"] == company_key), None)
+    score = store.latest_company_score(company_key)
     raw = store.get_raw(company_key, "tianyancha_web") or {}
     if not isinstance(raw, dict):
         raw = {}
@@ -213,12 +212,18 @@ def job_detail(store: AppStore, job_id: str) -> dict | None:
         return None
     job = dict(row)
 
-    fit = next((item for item in store.latest_job_fits(limit=500)
-                if item["job_id"] == job_id), None)
-    score = None
-    if job.get("company_key"):
-        score = next((item for item in store.latest_company_scores(limit=500)
-                      if item["company_key"] == job["company_key"]), None)
+    fit = store.latest_job_fit(job_id)
+    score = store.latest_company_score(job["company_key"]) if job.get("company_key") else None
+    fit_resume = store.resume_version(int(fit["resume_id"])) if fit and fit.get("resume_id") else None
+    active_resume = store.latest_resume(confirmed_only=True) if fit_resume else None
+    if not fit:
+        resume_state = None
+    elif not fit.get("resume_id"):
+        resume_state = "unknown"
+    elif active_resume and fit["resume_id"] == active_resume["id"]:
+        resume_state = "current"
+    else:
+        resume_state = "stale"
 
     return {
         "id": job["job_id"],
@@ -253,6 +258,10 @@ def job_detail(store: AppStore, job_id: str) -> dict | None:
             "total": fit["total"], "grade": fit["grade"], "verdict": fit["verdict"],
             "dimensions": {d["name"]: d["score"] for d in (fit["dimensions"] or [])},
             "advice": fit["advice"],
+            "resume_id": fit.get("resume_id"),
+            "resume_name": fit_resume.get("name") if fit_resume else None,
+            "resume_state": resume_state,
+            "at": fit.get("created_at"),
         },
     }
 

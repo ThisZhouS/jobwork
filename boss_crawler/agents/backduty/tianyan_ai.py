@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..registry import register
-from ..toolagent import ToolAgent, ToolCall, describe_bundle
+from ..toolagent import ToolAgent, ToolCall
 
 
 class TianyanAiAgent(ToolAgent):

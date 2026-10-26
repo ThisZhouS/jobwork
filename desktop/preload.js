@@ -40,4 +40,16 @@ contextBridge.exposeInMainWorld("api", {
 
   openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
   writeTemp: (name, content) => ipcRenderer.invoke("app:write-temp", name, content),
+  clipboardWrite: (text) => ipcRenderer.invoke("clipboard:write", text),
+  backupSave: (name, text) => ipcRenderer.invoke("backup:save", { name, text }),
+  backupOpen: () => ipcRenderer.invoke("backup:open"),
+
+  // 桌面通知：标题/正文都是纯文本，点击后把站内路由送回渲染进程。
+  notify: (payload) => ipcRenderer.invoke("notify:show", payload),
+  notifyProbe: () => ipcRenderer.invoke("notify:probe"),
+  onNotifyOpen: (onOpen) => {
+    const handler = (_e, href) => onOpen(href);
+    ipcRenderer.on("notify:open", handler);
+    return () => ipcRenderer.removeListener("notify:open", handler);
+  },
 });

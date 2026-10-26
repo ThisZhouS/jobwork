@@ -161,7 +161,8 @@ async def summarize_findings(findings: Iterable[Finding], company: str,
         data = {"summary": text, "points": [], "risk_level": "unknown"}
 
     summary = str(data.get("summary") or "").strip()
-    points = data.get("points") if isinstance(data.get("points"), list) else []
+    raw_points = data.get("points")
+    points: list[Any] = raw_points if isinstance(raw_points, list) else []
     if not summary and not points:
         return None
     return {

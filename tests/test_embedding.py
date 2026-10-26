@@ -151,9 +151,17 @@ class ApiKeyTests(unittest.TestCase):
             self.assertEqual(load_api_key(), "from-env")
 
     def test_file_fallback(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(load_api_key(config.ARK_KEY_FILE), config.ARK_KEY_FILE.read_text(
-                encoding="utf-8").strip())
+        import tempfile
+        from pathlib import Path
+
+        handle, name = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write("from-file\n")
+        try:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(load_api_key(Path(name)), "from-file")
+        finally:
+            Path(name).unlink(missing_ok=True)
 
     def test_missing_key_raises(self):
         from pathlib import Path

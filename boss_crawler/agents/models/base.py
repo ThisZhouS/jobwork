@@ -49,7 +49,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 #: 能力：一个规格可以同时提供多种
 KINDS = ("chat", "embedding", "rerank")

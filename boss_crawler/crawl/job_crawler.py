@@ -229,7 +229,7 @@ class JobCrawler:
             human_sleep(config.DETAIL_DELAY)
 
     def enrich_records(
-        self, records: list[dict], *, on_record=None, delay: float | None = None
+        self, records: list[dict], *, on_record=None, delay: tuple[float, float] | None = None
     ) -> list[dict]:
         """给已有记录回源补详情（主要补 address / description）。
 
