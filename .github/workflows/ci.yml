@@ -29,5 +29,5 @@ jobs:
           set -o pipefail
           uv run pytest -q --cov --cov-report=term-missing --junitxml=pytest.xml 2>&1 | tee pytest.log
       - name: annotate test failures
-        if: steps.test.outcome == 'failure'
+        if: failure() && steps.test.outcome == 'failure'
         run: uv run python tools/ci_annotate.py pytest.xml pytest.log
