@@ -1,7 +1,7 @@
 {
   "name": "jobs-desktop",
   "version": "0.3.0",
-  "description": "求职背调工作台（Electron 壳，调 boss_crawler app CLI）",
+  "description": "求职工作台桌面端（Electron）",
   "author": "ThisZhouS",
   "main": "main.js",
   "scripts": {
