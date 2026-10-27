@@ -32,3 +32,6 @@ desktop/node_modules/
 desktop/dist/
 desktop/dist*/
 desktop/out/
+
+# 本地技术文档与界面截图（不发布）
+docs/

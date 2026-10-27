@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boss-crawler"
 version = "0.3.0"
-description = "BOSS直聘 岗位采集 / JD 结构化 / 天眼查背调 / PostgreSQL 元数据与向量存储"
+description = "岗位采集 / JD 结构化 / 公司背调 / PostgreSQL 元数据与向量存储"
 requires-python = ">=3.10"
 dependencies = [
     "scrapling==0.4.8",
